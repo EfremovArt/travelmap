@@ -59,7 +59,7 @@ class HomeScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 24),
                       Text(
-                        'Главный экран',
+                        'Main Screen',
                         style: GoogleFonts.poppins(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
@@ -68,7 +68,7 @@ class HomeScreen extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        'Здесь будет карта ваших путешествий',
+                        'Here will be your travel map',
                         style: GoogleFonts.poppins(
                           fontSize: 16,
                           color: Colors.white.withOpacity(0.8),
@@ -91,7 +91,7 @@ class HomeScreen extends StatelessWidget {
                           ),
                         ),
                         child: Text(
-                          'Вернуться на экран входа',
+                          'Return to login screen',
                           style: GoogleFonts.poppins(
                             fontSize: 16,
                             fontWeight: FontWeight.w500,

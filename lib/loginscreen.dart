@@ -4,7 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import 'package:glass_kit/glass_kit.dart';
-import 'home_screen.dart';
+import 'screens/main_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -43,8 +43,8 @@ class _LoginScreenState extends State<LoginScreen> {
   // Имитация входа через Google
   void _mockGoogleSignIn() {
     // Переход на главный экран
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (context) => const HomeScreen()),
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (context) => const MainScreen()),
     );
   }
 
@@ -146,7 +146,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            'Исследуйте мир вместе с нами',
+                            'Explore the world with us',
                             style: GoogleFonts.poppins(
                               fontSize: 16,
                               color: Colors.white.withOpacity(0.9),
@@ -189,7 +189,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          'Продолжая, вы соглашаетесь с правилами\nи условиями использования',
+                          'By continuing, you agree to our\nterms and conditions',
                           textAlign: TextAlign.center,
                           style: GoogleFonts.poppins(
                             fontSize: 12,
