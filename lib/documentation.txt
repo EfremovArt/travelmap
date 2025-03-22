@@ -1,0 +1,2389 @@
+The PermissionsManager is a set of utilities that help you to check for, request, and respond to any number of Android system permissions such as device location or camera.
+
+PermissionsManager
+
+If you build your Android project targeting API level 23 or higher, then your application will need to request permissions during runtime. Handling this directly in your activity produces boilerplate code and can often be hard to manage. That's where the PermissionsManager class comes into play. With the PermissionsManager class, you can check whether the user has granted location permission and request permissions if the user hasn't granted them yet. You can use val permissionsManager = PermissionsManager(this), you'll need to implement PermissionsListener.
+
+Once you have set up your permissions manager, you will still need to override onRequestPermissionsResult() in your Activity and call the permissionsManager's same method.
+
+Note: The PermissionsManager can also be used for requesting other permissions besides location.
+
+
+lateinit var permissionsManager: PermissionsManager
+
+override fun onCreate(savedInstanceState: Bundle?) {
+  if (PermissionsManager.areLocationPermissionsGranted(context)) {
+    // Permission sensitive logic called here, such as activating the Maps SDK's LocationComponent to show the device's location
+  } else {
+    permissionsManager = PermissionsManager(this)
+    permissionsManager.requestLocationPermissions(this)
+  }
+}
+
+override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+  permissionsManager.onRequestPermissionsResult(requestCode, permissions, grantResults)
+}
+EXAMPLE
+Show the user's location on the map
+See how the PermissionsManager is used to check permissions before showing the device location puck.
+PermissionsListener
+
+The PermissionsListener is an interface that returns information about the state of permissions. Set up the interface and pass it into the PermissionsManager's constructor.
+
+The permission result is invoked once the user decides whether to allow or deny the permission. You can use granted boolean parameter to write an if statement. Both cases should be handled correctly. Continue with your permission-sensitive logic if the user approves. Otherwise, if the user denies, display a message that tells the user that the permission is required for your application to work. An explanation isn't required but strongly encouraged to allow the user to understand why you are requesting this permission.
+
+
+var permissionsListener: PermissionsListener = object : PermissionsListener {
+	override fun onExplanationNeeded(permissionsToExplain: List<String>) {
+
+	}
+
+	override fun onPermissionResult(granted: Boolean) {
+		if (granted) {
+
+			// Permission sensitive logic called here, such as activating the Maps SDK's LocationComponent to show the device's location
+
+		} else {
+
+			// User denied the permission
+
+		}
+	}
+}
+
+User's location on the map
+
+On this page
+Location component
+Puck style options
+Use a custom image
+Set Puck Bearing Source
+Example
+Location Tracking
+Viewport States
+Viewport Transitions
+Example
+Location provider
+Use a custom location provider
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The Mapbox Maps SDK for Android's location component enables your application to observe, respond and display the user's location.
+
+Before you can show the user's location on the map, users must grant your application permission to access their location. See previous section Permission handling for more details.
+
+Location component
+
+To visualize the user's location on the map you should enable the location component. There are different ways to enable location:
+
+Directly in your MapView XML component using the attribute mapbox_locationComponentEnabled:
+
+<com.mapbox.maps.MapView
+  android:id="@+id/mapView"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  app:mapbox_locationComponentEnabled="true"
+  app:mapbox_locationComponentPuckBearing="heading" />
+Programmatically, by calling enabled through the location component:
+
+Android View
+
+Jetpack Compose
+ 
+    setContentView(mapView)
+ 
+    with(mapView) {
+ 
+      location.locationPuck = createDefault2DPuck(withBearing = true)
+ 
+      location.enabled = true
+ 
+      location.puckBearing = PuckBearing.COURSE
+ 
+      location.puckBearingEnabled = true
+ 
+      viewport.transitionTo(
+ 
+        targetState = viewport.makeFollowPuckViewportState(),
+ 
+        transition = viewport.makeImmediateViewportTransition()
+ 
+      )
+ 
+    }
+The location component makes use of two dedicated layers in the Maps SDK to display either a 2D device location icon (using layer ID LOCATION_INDICATOR_LAYER) or a 3D model (using layer ID MODEL_LAYER). These layers are displayed within the map rather than on top of the map as an Android view. Layers in Mapbox map styles give you precise control over how you show a device's location on the map.
+
+By default, the Maps SDK for Android provides a two dimensional location puck with a blue dot and white circle.
+
+EXAMPLE
+Show the user's location on the map
+Show the user's location on a map using the default location puck.
+A screenshot of an Android application displaying the user's location a map.
+Puck style options
+
+There are several options to customize the appearance of the location puck. You can see the full list at LocationComponentSettings.
+
+You can directly use the LocationComponentPlugin to change the settings. For example, the pulsing effect is disabled by default, but you can enable this effect by passing true to the pulsingEnabled property.
+
+
+Android View
+
+Jetpack Compose
+ 
+      location.pulsingEnabled = true
+Use a custom image
+
+You can further customize the puck by using custom image drawables to display the user's location on a map. Set custom location puck styles in one of two ways: using XML attributes or programmatically using the LocationPuck class.
+
+Here's an example using style XML attributes to customize the appearance of the location icon:
+
+
+<com.mapbox.maps.MapView
+    android:id="@+id/mapView"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:mapbox_locationComponentEnabled = "true"
+    app:mapbox_locationComponentLocationPuck= "location_puck_2_d"
+    app:mapbox_locationComponentLocationPuckLocationPuck2DTopImage= "@drawable/custom_user_icon"
+    app:mapbox_locationComponentLocationPuckLocationPuck2DBearingImage= "@drawable/custom_user_arrow"
+    app:mapbox_locationComponentLocationPuckLocationPuck2DShadowImage= "@drawable/custom_user_puck_icon"
+    tools:context=".examples.LocationComponentActivity" />
+Here's an example using the LocationPuck class to programmatically customize the appearance of the location icon. Create a LocationPuck2D or LocationPuck3D object and set it through LocationComponentPlugin#locationPuck method. The following example also specifies the size of the icon based on the map's zoom level using scaleExpression.
+
+
+Android View
+
+Jetpack Compose
+ 
+    mapView.location.locationPuck = LocationPuck2D(
+ 
+      topImage = ImageHolder.from(R.drawable.mapbox_user_icon), // ImageHolder also accepts Bitmap
+ 
+      bearingImage = ImageHolder.from(R.drawable.mapbox_user_bearing_icon),
+ 
+      shadowImage = ImageHolder.from(R.drawable.mapbox_user_stroke_icon),
+ 
+      scaleExpression = interpolate {
+ 
+        linear()
+ 
+        zoom()
+ 
+        stop {
+ 
+          literal(0.0)
+ 
+          literal(0.6)
+ 
+        }
+ 
+        stop {
+ 
+          literal(20.0)
+ 
+          literal(1.0)
+ 
+        }
+ 
+      }.toJson()
+ 
+    )
+You can revert to the default 2D puck using createDefault2DPuck function.
+
+Set Puck Bearing Source
+
+The user location can track bearing using the device heading or device course. This option is in LocationComponentSettings.
+
+Example
+
+mapView.location.puckBearing = PuckBearing.HEADING
+mapView.location.puckBearing = PuckBearing.COURSE
+Location Tracking
+
+To make the camera follow the location puck, you can use ViewportPlugin, which is available at mapView.viewport.
+
+ViewportPlugin is primarily used to track objects on a map, but it can be extended with custom states and transitions as well.
+
+Viewport States
+
+ViewportState produces camera updates based on implementation-specific rules (For example: tracking a dynamic location data source or showing a static overview of a predefined region).
+
+Two ViewportState implementations are provided by the SDK, both of which can be instantiated from the ViewportPlugin:
+
+viewport.makeFollowPuckViewportState(options): This state syncs the map camera with the location puck.
+viewport.makeOverviewViewportState(options): This state makes the camera show a user-provided geometry.
+Besides using these built-in implementations, you can also create your own and use them with the ViewportPlugin.
+
+Viewport Transitions
+
+ViewportTransition defines how to transition to a target ViewportState.
+
+Two ViewportTransition implementations are also provided by the SDK, both of which can be instantiated from the ViewportPlugin:
+
+viewport.makeDefaultViewportTransition(options): The default viewport transition uses animations to move the camera to the target state.
+viewport.makeImmediateViewportTransition(): The immediate viewport transition moves the camera to the target state at once without using animations.
+Besides using these built-in implementations, you can also create your own and use them with the ViewportPlugin.
+
+Example
+
+
+Android View
+
+Jetpack Compose
+ 
+    val viewportPlugin = mapView.viewport
+ 
+    // transition to followPuckViewportState with default transition
+ 
+    val followPuckViewportState: FollowPuckViewportState = viewportPlugin.makeFollowPuckViewportState(
+ 
+      FollowPuckViewportStateOptions.Builder()
+ 
+        .bearing(FollowPuckViewportStateBearing.Constant(0.0))
+ 
+        .padding(EdgeInsets(200.0 * resources.displayMetrics.density, 0.0, 0.0, 0.0))
+ 
+        .build()
+ 
+    )
+ 
+    viewportPlugin.transitionTo(followPuckViewportState) { success ->
+ 
+      // the transition has been completed with a flag indicating whether the transition succeeded
+ 
+    }
+
+Android View
+
+Jetpack Compose
+ 
+    // transition to overviewViewportState with immediate transition
+ 
+    val overviewViewportState: OverviewViewportState = viewportPlugin.makeOverviewViewportState(
+ 
+      OverviewViewportStateOptions.Builder()
+ 
+        .geometry(routePoints)
+ 
+        .padding(EdgeInsets(100.0, 100.0, 100.0, 100.0))
+ 
+        .build()
+ 
+    )
+ 
+    val immediateTransition = viewportPlugin.makeImmediateViewportTransition()
+ 
+    viewportPlugin.transitionTo(overviewViewportState, immediateTransition) { success ->
+ 
+      // the transition has been completed with a flag indicating whether the transition succeeded
+ 
+    }
+Location provider
+
+The LocationProvider is an interface of Mapbox Maps SDK, to provide location updates to the LocationComponentPlugin. The current location provider used in the location component can be accessed by calling getLocationProvider().
+
+You can register your own LocationConsumer to process the same locations used for rendering the location puck on the map. If you need access to the raw device's location, see Accessing device location.
+
+Use Google's Fused Location Provider
+The Maps SDK also comes pre-compiled with support for the Google's Fused Location Provider. If your target devices support Google Play Services, add the Google Play Location Services dependency to your project, and the Maps SDK will use the Google's Fused Location Provider in your application automatically:implementation("com.google.android.gms:play-services-location:21.0.1")
+Use a custom location provider
+
+You can also provide your own LocationProvider to use with LocationComponentPlugin. Use thesetLocationProvider(locationProvider: LocationProvider) API to replace the default implementation.
+Accessing device location
+
+On this page
+LocationService
+Requesting location updates
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The LocationService is a set of utilities that help you access and react to the device location.
+
+LocationService
+
+If your application needs location information, LocationService can help you get this information while also simplifying the process and being flexible enough to use different services.
+
+Location Provider
+See location provider if you only need to access the current location puck position on the map.
+The LocationService supports the following location providers:
+
+Google's Fused Location Providers
+Android GPS and Network Providers
+You can access the LocationService and get a DeviceLocationProvider using:
+
+
+val locationService : LocationService = LocationServiceFactory.getOrCreate()
+var locationProvider: DeviceLocationProvider? = null
+
+val request = LocationProviderRequest.Builder()
+                .interval(IntervalSettings.Builder().interval(0L).minimumInterval(0L).maximumInterval(0L).build())
+                .displacement(0F)
+                .accuracy(AccuracyLevel.HIGHEST)
+                .build();
+
+val result = locationService.getDeviceLocationProvider(request)
+if (result.isValue) {
+    locationProvider = result.value!!
+} else {
+    Log.error("Failed to get device location provider")
+}
+This will get the most suitable DeviceLocationProvider that is available.
+
+Requesting location updates
+
+To receive location updates, create a LocationObserver and override the onLocationUpdateReceived function to handle the locations:
+
+
+val locationObserver = object: LocationObserver {
+        override fun onLocationUpdateReceived(locations: MutableList<Location>) {
+            Log.e(TAG, "Location update received: " + locations)
+        }
+}
+locationProvider.addLocationObserver(locationObserver)
+To stop receiving updates, remove your observer:
+
+
+locationProvider.removeLocationObserver(locationObserver);
+You can register for location updates via a PendingIntent on the DeviceLocationProvider:
+
+
+locationProvider.requestLocationUpdates(myPendingIntent)
+locationProvider.removeLocationUpdates(myPendingIntent)
+You can also register a LocationObserver with a Looper object, the message queue will then be used to implement the callback mechanism:
+
+
+addLocationObserver(observer: LocationObserver, looper: Looper)
+The location provider automatically starts and stops collecting locations based on the amount of subscribers: once the first subscriber is registered, the service starts, and when the last observer is unregistered, the service stops.
+
+If you want to get the last known location, you can do so via the asynchronous LocationProivder.getLastLocation function. The function returns a Cancelable object which allows cancelling the request if needed:
+
+
+val lastLocationCancelable = locationProvider.getLastLocation { result ->
+    result?.let { doSomething(it) }
+}
+To cancel the request, call
+
+
+lastLocationCancelable.cancel()
+
+Annotations
+
+On this page
+Default markers
+Other shapes
+Circle annotation
+Polyline annotation
+Polygon annotation
+Interactivity
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+Add annotations to the map including point, circle, polyline, and polygon shapes using the Mapbox Maps SDK's Annotations API. Use the Annotations API to create annotation managers based on the type of annotation that you're interested in. Every annotation manager handles a collection of annotations. Once a manager has been created, you can create and add individually styled instances of the corresponding annotation type.
+
+Benefits:
+
+Built-in interaction support like selecting and dragging annotations around the map.
+No external data file necessary.
+Every annotation can be individually styled.
+Every annotation layer can be adjusted to be above or below another layer.
+Same performance benefits as using style layers.
+Limitations:
+
+No default marker image available.
+Inefficient for adding many features (> 250) to the map.
+Default markers
+
+The Mapbox Maps SDK's Annotations API does not provide a default image for symbol layers. You must provide an image and add it to the style before using the PointAnnotationManager to add it to the map.
+
+Download the red marker pin image and add it to your Android Studio project.
+
+arrow-down
+Download red marker image
+ 
+Android View
+
+Jetpack Compose
+
+// Create an instance of the Annotation API and get the PointAnnotationManager.
+val annotationApi = mapView?.annotations
+val pointAnnotationManager = annotationApi?.createPointAnnotationManager(mapView)
+// Set options for the resulting symbol layer.
+val pointAnnotationOptions: PointAnnotationOptions = PointAnnotationOptions()
+    // Define a geographic coordinate.
+    .withPoint(Point.fromLngLat(18.06, 59.31))
+    // Specify the bitmap you assigned to the point annotation
+    // The bitmap will be added to map style automatically.
+    .withIconImage(YOUR_ICON_BITMAP)
+// Add the resulting pointAnnotation to the map.
+pointAnnotationManager?.create(pointAnnotationOptions)
+A screenshot of an Android application displaying a map with a red marker pin in the center.
+Other shapes
+
+The Annotation API also supports putting other shapes on the map including circles using CircleAnnotationManager, polylines using PolylineAnnotationManager, and polygons using PolygonAnnotationManager. These annotations work like the point annotations described above, but do not require an image. The options available for each type of annotation varies and you can find a full list in the API reference documentation.
+
+Circle annotation
+
+A circle annotation (CircleAnnotation) places a circle at a point on the map.
+
+
+Android View
+
+Jetpack Compose
+
+// Create an instance of the Annotation API and get the CircleAnnotationManager.
+val annotationApi = mapView?.annotations
+val circleAnnotationManager = annotationApi?.createCircleAnnotationManager(mapView)
+// Set options for the resulting circle layer.
+val circleAnnotationOptions: CircleAnnotationOptions = CircleAnnotationOptions()
+    // Define a geographic coordinate.
+    .withPoint(Point.fromLngLat(18.06, 59.31))
+    // Style the circle that will be added to the map.
+    .withCircleRadius(8.0)
+    .withCircleColor("#ee4e8b")
+    .withCircleStrokeWidth(2.0)
+    .withCircleStrokeColor("#ffffff")
+// Add the resulting circle to the map.
+circleAnnotationManager?.create(circleAnnotationOptions)
+Polyline annotation
+
+A polyline annotation (PolylineAnnotation) connects a list of coordinates on the map with a polyline. The order of the coordinates in the list will determine the order in which to connect the points. Coordinate ordering works the same way as in the GeoJSON specification.
+
+
+Android View
+
+Jetpack Compose
+
+// Create an instance of the Annotation API and get the polyline manager.
+val annotationApi = mapView?.annotations
+polylineAnnotationManager = annotationApi.createPolylineAnnotationManager(mapView)
+// Define a list of geographic coordinates to be connected.
+val points = listOf(
+    Point.fromLngLat(17.94, 59.25),
+    Point.fromLngLat(18.18, 59.37)
+)
+// Set options for the resulting line layer.
+val polylineAnnotationOptions: PolylineAnnotationOptions = PolylineAnnotationOptions()
+    .withPoints(points)
+    // Style the line that will be added to the map.
+    .withLineColor("#ee4e8b")
+    .withLineWidth(5.0)
+// Add the resulting line to the map.
+polylineAnnotationManager?.create(polylineAnnotationOptions)
+Polygon annotation
+
+A polygon annotation (PolygonAnnotation) takes a list of coordinates and will try to connect those coordinates and add the resulting polygonal shape to the map. The order of the coordinates in the list matters and works the same way as in the GeoJSON specification.
+
+
+Android View
+
+Jetpack Compose
+
+// Create an instance of the Annotation API and get the polygon manager.
+val annotationApi = mapView?.annotations
+val polygonAnnotationManager = annotationApi?.createPolygonAnnotationManager(mapView)
+// Define a list of geographic coordinates to be connected.
+val points = listOf(
+    listOf(
+        Point.fromLngLat(17.94, 59.25),
+        Point.fromLngLat(18.18, 59.25),
+        Point.fromLngLat(18.18, 59.37),
+        Point.fromLngLat(17.94, 59.37)
+    )
+)
+// Set options for the resulting fill layer.
+val polygonAnnotationOptions: PolygonAnnotationOptions = PolygonAnnotationOptions()
+    .withPoints(points)
+    // Style the polygon that will be added to the map.
+    .withFillColor("#ee4e8b")
+    .withFillOpacity(0.4)
+// Add the resulting polygon to the map.
+polygonAnnotationManager?.create(polygonAnnotationOptions)
+Interactivity
+
+The Annotation API includes the ability make annotations draggable and handles drag gestures for you. You can specify that annotations should be draggable when adding the annotation to the map initially.
+
+
+Android View
+
+Jetpack Compose
+
+val pointAnnotationOptions: PointAnnotationOptions = PointAnnotationOptions()
+    .withPoint(Point.fromLngLat(18.06, 59.31))
+    .withIconImage(YOUR_ICON_BITMAP)
+    // Make the annotation draggable.
+    .withDraggable(true)
+// Add the draggable pointAnnotation to the map.
+pointAnnotationManager?.create(pointAnnotationOptions)
+Or, you can update an annotation that's already been added to the map to be draggable.
+
+
+Android View
+
+Jetpack Compose
+
+// When a user clicks on a draggable menu item defined in the layout,
+// then toggle whether all point annotations are draggable.
+R.id.menu_action_draggable -> {
+  pointAnnotationManager?.annotations?.forEach {
+    it.isDraggable = !it.isDraggable
+  }
+}
+
+View annotations
+
+On this page
+Create a view annotation
+Create a layout
+Add a view annotation to the MapView
+Create a view annotation with Jetpack Compose
+Define the view annotation content
+Add a view annotation to the MapboxMap
+Customize appearance
+Specify order
+Control anchor
+Handle visibility
+Common uses
+Display on map click
+Attach to the layer feature
+Attach to a point annotation by the layer/feature id
+Attach to a line annotation by the layer/feature id
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+Add a regular Android View bound to some Geometry on top of the Mapbox MapView using the View Annotations API. This can be helpful to display an info window when a point is tapped or add a label on top of a linestring or a polygon.
+
+Benefits:
+
+Adding Android View as a view annotation allows to add clickable buttons or any other Android UI elements.
+View annotations bound to complex geometries (line, polygon) are positioned dynamically and stay within the camera viewport if possible.
+High rendering performance when using reasonable number of views (generally below 100, but may vary based on the view's content and the user's device model).
+Wide number of options including allowing overlap between view annotations, selected state, connecting to a map feature, and more.
+Limitations:
+
+Performance may be an issue when adding many view annotations (> 250) to the map if allow overlap is turned on.
+Low-level API that requires adding code on the user's end for advanced cases.
+Create a view annotation
+
+To create a view annotation a few things are required:
+
+An Android view represented as either an XML layout that will be inflated by the view annotation manager or a View prepared beforehand.
+A ViewAnnotationManager instance.
+Create a layout
+
+Start by creating a new layout that contains the contents of the view annotation. This can include anything from text to images to interactive elements.
+
+For example, to create a minimal layout containing text:
+
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="100dp"
+    android:layout_height="60dp"
+    android:background="@android:color/white"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+<TextView
+        android:id="@+id/annotation"
+        android:text="hello world"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="20sp"
+        android:padding="3dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+Add a view annotation to the MapView
+
+Start by getting a ViewAnnotationManager instance:
+
+val viewAnnotationManager = binding.mapView.viewAnnotationManager
+Then use the manager's addViewAnnotation method to create the view annotation. Three overloaded methods are available:
+
+Taking a View that is already inflated.
+Taking an XML identifier resId and returning a synchronously inflated View.
+Taking an XML identifier resId and returning an inflated View in asyncInflateCallback. If using this method, you must add async inflater dependency to your project explicitly (any 1.x.x version should work).
+All methods above also require ViewAnnotationOptions with at least annotatedFeature field specified. AnnotatedFeature can be either a direct Geometry instance or a LayerFeature. The latter allows to bind the view annotation to the specific feature on the map, and to update the view annotation with the feature automatically. ViewAnnotationOptions.geometry and ViewAnnotationOptions.annotatedLayerFeature extension functions are available in Kotlin to simplify the annotatedFeature setting.
+
+You can also specify other options for the view annotation within viewAnnotationOptions.
+
+private fun addViewAnnotationToPoint(point: Point) {
+    // Define the view annotation
+    val viewAnnotation = viewAnnotationManager.addViewAnnotation(
+        // Specify the layout resource id
+        resId = R.layout.annotation_view,
+        // Set any view annotation options
+        options = viewAnnotationOptions {
+            // View annotation is placed at the specific geo coordinate
+            geometry(point)
+        }
+    )
+}
+
+private fun addViewAnnotationToAnnotatedLayerFeature(point: Point) {
+    // Define the view annotation
+    val viewAnnotation = viewAnnotationManager.addViewAnnotation(
+        // Specify the layout resource id
+        resId = R.layout.annotation_view,
+        // Set any view annotation options
+        options = viewAnnotationOptions {
+            // View annotation is placed at the feature with `FEATURE_ID` from layer with `LAYER_ID`
+            annotatedLayerFeature(LAYER_ID) {
+              featureId(FEATURE_ID)
+            }
+        }
+    )
+}
+Add a simple view annotation containing text to the map.
+More view annotation options
+There are many more options available when adding or updating the view annotation. See the complete list of options in the ViewAnnotationOptions documentation.
+Create a view annotation with Jetpack Compose
+
+To create and add a view annotation to the map in Jetpack Compose, you will need to insert the ViewAnnotation composable function to the content of MapboxMap composable function, and define your view annotation content as a Composable and place it as the content of the ViewAnnotation composable function.
+
+Define the view annotation content
+
+First, define the ViewAnnotation content using composable function, for example, to create a minimal Text composable function:
+
+// Define the content of the ViewAnnotation, for example create a minimal Text composable function:
+@Composable
+public fun ViewAnnotationContent() {
+  Text(
+    text = "Hello world",
+    modifier = Modifier
+      .padding(3.dp)
+      .width(100.dp)
+      .height(60.dp)
+      .background(
+        Color.White
+      ),
+    textAlign = TextAlign.Center,
+    fontSize = 20.sp
+  )
+}
+Add a view annotation to the MapboxMap
+
+You can add ViewAnnotation composable function with ViewAnnotationOptions to the content of MapboxMap composable function to insert the view annotation to the map. Note that ViewAnnotationOptions need to be provided with at least annotatedFeature field specified. AnnotatedFeature can be either a direct Geometry instance or a LayerFeature. The latter allows to bind the view annotation to the specific feature on the map, and to update the view annotation with the feature automatically. ViewAnnotationOptions.geometry and ViewAnnotationOptions.annotatedLayerFeature extension functions are available to simplify setting annotatedFeature.
+
+You can also specify other options for the view annotation within viewAnnotationOptions.
+
+MapboxMap(
+  Modifier.fillMaxSize(),
+) {
+  // Insert a ViewAnnotation at specific geo coordinate.
+  ViewAnnotation(
+    options = viewAnnotationOptions {
+      // View annotation is placed at the specific geo coordinate
+      geometry(Point.fromLngLat(18.06, 59.31))
+    }
+  ) {
+    // Insert the content of the ViewAnnotation
+    ViewAnnotationContent()
+  }
+  // Insert a ViewAnnotation that's associated with a feature from specified layer.
+  ViewAnnotation(
+    options = viewAnnotationOptions {
+      // View annotation is placed at the feature with `FEATURE_ID` from layer with `LAYER_ID`
+      annotatedLayerFeature(LAYER_ID) {
+        featureId(FEATURE_ID)
+      }
+    }
+  ) {
+    // Insert the content of the ViewAnnotation
+    ViewAnnotationContent()
+  }
+}
+More view annotation options
+There are many more options available when adding or updating the view annotation. See the complete list of options in the ViewAnnotationOptions documentation.
+Customize appearance
+
+Specify order
+
+The z-index of view annotations is based on the order in which they are added. This allows you to control which view is visible when multiple views intersect on the screen.
+
+To bring a view annotation on top of others regardless of the order in which it was added, use the selected property:
+
+
+Android View
+
+Jetpack Compose
+
+viewAnnotationManager.updateViewAnnotation(
+  existingViewAnnotation,
+  viewAnnotationOptions {
+    selected(true)
+  }
+)
+Any number of view annotations could be in selected state. The z-index among selected view annotations also respects the order in which they are added.
+
+View annotations with z-index based on the order in which they were added: Hello world!, Прывітанне Сусвет!, Hallo Welt!, Hei maailma!
+Default order
+View annotations with z-index based on the order in which they were added: Hello world!, Прывітанне Сусвет!, Hallo Welt!, Hei maailma!
+Use the selected property to bring the Hello world! annotation on top of others regardless of the order in which they were added.
+Override order
+Use the selected property to bring the Hello world! annotation on top of others regardless of the order in which they were added.
+Control anchor
+
+To update the anchor position and the offset of the view annotation you can specify single or multiple anchors. When you set multiple anchors, the system uses the first one that fits the view annotation within the viewport:
+
+
+Android View
+
+Jetpack Compose
+
+// set single anchor
+viewAnnotationManager.updateViewAnnotation(
+  existingViewAnnotation,
+  viewAnnotationOptions {
+    annotationAnchor {
+      // bottom of the view annotation is placed on the geometry
+      anchor(ViewAnnotationAnchor.BOTTOM)
+      offsetX(-10.0)
+      offsetY(20.0)
+    }
+  }
+)
+
+// set multiple anchors
+viewAnnotationManager.updateViewAnnotation(
+  existingViewAnnotation,
+  viewAnnotationOptions {
+    annotationAnchors(
+      {
+        anchor(ViewAnnotationAnchor.TOP_RIGHT)
+      },
+      {
+        anchor(ViewAnnotationAnchor.TOP_LEFT)
+      },
+      {
+        anchor(ViewAnnotationAnchor.BOTTOM_RIGHT)
+      },
+    )
+  }
+)
+Handle visibility
+
+When a view annotation is added or updated, visibility can be specified explicitly:
+
+
+Android View
+
+Jetpack Compose
+
+viewAnnotationManager.addViewAnnotation(
+  R.layout.some_layout,
+  viewAnnotationOptions {
+    geometry(point)
+    // hide view annotation initially, even if the android view is visible
+    visible(false)
+  }
+)
+For most use cases there is no need to specify visibility for viewAnnotationOptions explicitly. Instead, you can update the visibility of the actual view, or guard the ViewAnnotation composable function with a condition:
+
+
+Android View
+
+Jetpack Compose
+
+val view = viewAnnotationManager.addViewAnnotation(
+  // Inflated view is visible by default
+  R.layout.some_layout,
+  viewAnnotationOptions {
+    // Do not set visibility explicitly
+    geometry(point)
+  }
+)
+// Simply hide the view when needed
+view.visibility = View.GONE
+Common uses
+
+The flexibility of the view annotations means that there are countless ways to use this feature, but there are a few common uses outlined below to help you get started.
+
+Display on map click
+
+You can add view annotations when a user interacts with the map.
+
+When the user clicks on the map, you can get information from the map camera, position (like in the example linked below), or data in the map to determine the contents of the view annotation using one of MapboxMap's map feature query methods.
+
+EXAMPLE
+View annotations: basic example
+Add view annotation to the map
+EXAMPLE
+(Compose) View annotations: basic example
+Show view annotations on a map
+Attach to the layer feature
+
+To attach the view annotation to the layer feature, ViewAnnotationOptions.annotatedFeature of type AnnotatedLayerFeature should be used. Specify the Feature to attach view annotation with the
+feature id and the layer id.
+
+The visibility of the feature will then determine the visibility of the view annotation. For example, if the feature collides with another feature, the associated view annotation will also disappear.
+
+Below you can find examples of a view annotation attached to a point layer and a line layer.
+
+Dynamic view annotations
+
+When a view annotation is added to the complex geometry (for example, line or polygon), it becomes dynamic and is displayed at some coordinate belonging to the geometry. It updates its position automatically if the camera viewport changes and the view annotation is going out of the visible scope.
+
+EXAMPLE
+Dynamic view annotations
+Add several dynamic view annotations to line and polygon features
+EXAMPLE
+(Compose) Dynamic view annotations
+Add several dynamic view annotations to line and polygon features
+Attach to a point annotation by the layer/feature id
+
+This shows marker pop-up window attached to a point with minimal amount of code :
+
+
+Android View
+
+Jetpack Compose
+
+// add point annotation
+val annotationPlugin = mapView.annotations
+val pointAnnotationOptions: PointAnnotationOptions = PointAnnotationOptions()
+  .withPoint(POINT)
+  .withIconImage(iconBitmap)
+  .withIconAnchor(IconAnchor.BOTTOM)
+val pointAnnotationManager = annotationPlugin.createPointAnnotationManager(AnnotationConfig(layerId = LAYER_ID))
+val pointAnnotation = pointAnnotationManager.create(pointAnnotationOptions)
+
+val viewAnnotationManager = mapView.viewAnnotationManager
+// add view annotation attached to the point
+val viewAnnotation = viewAnnotationManager.addViewAnnotation(
+  resId = R.layout.item_callout_view,
+  options = viewAnnotationOptions {
+    annotatedLayerFeature(LAYER_ID) {
+      featureId(annotation.id)
+    }
+  }
+)
+Attach a view annotation to a marker symbol and add it to the map.
+EXAMPLE
+View annotations: attach to a point annotation
+Add view annotation anchored to a point annotation and update its position when point annotation is dragging
+Attach to a line annotation by the layer/feature id
+
+This shows marker pop-up window attached to a polyline with minimal amount of code:
+
+
+Android View
+
+Jetpack Compose
+
+// add polyline annotation
+val annotationPlugin = mapView.annotations
+val annotationOptions: PolylineAnnotationOptions = PolylineAnnotationOptions()
+  .withPoints(listOf(POINT_SRC, POINT_DST))
+  .withLineWidth(10.0)
+val annotationManager = annotationPlugin.createPolylineAnnotationManager(AnnotationConfig(layerId = LAYER_ID))
+val annotation = annotationManager.create(annotationOptions)
+
+val viewAnnotationManager = mapView.viewAnnotationManager
+// add view annotation attached to the polyline
+val viewAnnotation = viewAnnotationManager.addViewAnnotation(
+  resId = R.layout.item_callout_view,
+  options = viewAnnotationOptions {
+    annotatedLayerFeature(LAYER_ID) {
+      featureId(annotation.id)
+    }
+  }
+)
+Add a view annotation bound to polyline annotation.
+EXAMPLE
+View annotations: advanced example
+
+Style layers
+
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The Annotation API makes it unnecessary to write much of the code that would otherwise be required to implement runtime and data-driven styling. But, it is possible to add style layers directly, and in some circumstances doing so will be beneficial.
+
+Benefits:
+
+Efficient and performant when adding many features to the map using a vector source.
+Compatible with GeoJSON or vector sources.
+Many style customization options.
+Could exclude the Annotation API when installing the SDK to reduce the SDK size.
+Limitations:
+
+No default image available.
+User interactions are not built-in and will require writing custom code.
+Need to learn the APIs and usage of layers which can be time intensive.
+Might need to learn how to use expressions to control the source data or use data-driven styling.
+Set a style
+
+On this page
+Load a style
+Mapbox Standard
+Classic styles and custom styles
+Delay setting the style
+Set a style in an XML MapView
+Configure a style
+Mapbox Standard
+Classic styles and custom styles
+Change to a different style
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+When adding a map to an Android application using the Maps SDK, you must specify a style to define how the map is displayed. A style dictates the map's visual design, including colors, labels, and feature visibility. It also includes information about data sources, and is used by the SDK to fetch the appropriate data necessary to render the map.
+
+Mapbox has several professionally designed styles for use in various types of applications, and many developers invest in designing highly-customized styles to make their Mapbox maps shine. Explore custom styles in our Style Gallery.
+
+An Android application displaying a map using the Mapbox Standard style.
+
+
+Once a style is loaded, you can continue to manipulate it at runtime, changing the appearance of the map by adding or removing layers, changing layer properties, and more.
+
+This guide explains how to set and configure a style when initializing a map and how to switch styles dynamically during runtime. Developers can choose from a variety of options, including Mapbox Standard, classic Mapbox styles, and custom styles designed in Mapbox Studio.
+
+Load a style
+
+The Maps SDK provides an embeddable map interface using MapView or MapboxMap. To render a map in the MapView or MapboxMap, you will need to determine which style the renderer should use. You can rely on the Mapbox Standard Style which is loaded by default, or you can specify another style.
+
+Mapbox Standard
+
+Mapbox Standard is our general-purpose map style that is designed to be used in a wide range of applications, suitable for most use cases and includes a variety of configuration options to customize the map's appearance.
+
+Mapbox Standard is the default style, and instantiating a MapView or MapboxMap without specifying any style means your map will use Mapbox Standard.
+
+
+Android View
+
+Jetpack Compose
+// Loads Mapbox Standard Style by default
+mapView = MapView(context)
+You can explicitly set Mapbox Standard as the style for your map by using the Style.STANDARD constant or calling MapboxStandardStyle() if you are using Jetpack Compose:
+
+
+Android View
+
+Jetpack Compose
+mapView = MapView(context, MapInitOptions(
+  context = context,
+  styleUri = Style.STANDARD
+))
+Classic styles and custom styles
+
+Mapbox provides several classic styles, suitable for various use cases. For example, the Mapbox Light and Mapbox Dark styles are designed to be subdued and will allow your custom data to stand out. The Mapbox Outdoors style includes helpful information for outdoor activities, such as hiking trails and contour lines. Mapbox Satellite and Mapbox Satellite Streets provide up-to-date satellite imagery for a closer look at the physical environment.
+
+You can also create your own custom styles using the Mapbox Studio style editor. Custom styles can be used to create a unique look and feel for your map, tailored to your application's design needs and can use Mapbox Standard or a classic style as a base.
+
+You can specify a style to use when you instantiate a map using a Style URL, a Style Constant, or a Style JSON string.
+
+Load a style using a Style URL
+
+All Mapbox styles and custom styles created in Mapbox Studio have a unique style URL starting with mapbox://. You can use this URL with the styleUri property of MapInitOptions, or using MapStyle with Jetpack Compose.
+
+
+Android View
+
+Jetpack Compose
+mapView = MapView(context, MapInitOptions(
+  context = context,
+  styleUri = "mapbox://styles/mapbox/streets-v12"
+))
+Load a Mapbox style using a Style Constant
+
+If you are using a Mapbox-designed style, you can use convenience variables instead of the full style URL. This will also make sure you're using the latest version of the style:
+
+Style Name	SDK Constant
+Mapbox Standard	Style.STANDARD
+Mapbox Standard Satellite	Style.STANDARD_SATELLITE
+Mapbox Streets	Style.MAPBOX_STREETS
+Mapbox Light	Style.LIGHT
+Mapbox Dark	Style.DARK
+Mapbox Outdoors	Style.OUTDOORS
+Mapbox Satellite	Style.SATELLITE
+Mapbox Satellite Streets	Style.SATELLITE_STREETS
+
+Android View
+
+Jetpack Compose
+mapView = MapView(context, MapInitOptions(
+  context = context,
+  styleUri = Style.OUTDOORS
+))
+Loading a Style using Style JSON
+Though less common, you can also load a style from a JSON string, either loaded from a local file or downloaded over the network. See a minimal style JSON example in Delay setting the style below.
+Delay setting the style
+
+If you want to initialize the MapView but delay loading a style until after the MapView is displayed on the UI, you can set the styleUri to null in MapInitOptions, or pass an empty string to MapStyle when using Jetpack Compose.
+
+
+Android View
+
+Jetpack Compose
+// set styleUri to null method
+mapview = MapView(context, MapInitOptions(context = context, styleUri = null))
+In the case above, MapView is rendered with solid black background color by default. But, if you want to adjust the color of the map's background to fit your design before your style is loaded to the MapView, you can create a minimal style JSON string with a background layer set to the desired color.
+
+
+Android View
+
+Jetpack Compose
+@Language("JSON")
+    private const val BLANK_STYLE = """
+{
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "hsl(100, 50%, 50%)"}
+    }
+  ]
+}
+"""
+
+MapView(context, MapInitOptions(context = context, styleUri = BLANK_STYLE))
+// or
+mapboxMap.loadStyle(BLANK_STYLE)
+Set a style in an XML MapView
+
+If using Android Views, you can add a MapView to the layout with an XML attribute mapbox_styleUri to load a Mapbox-hosted style using a style URL.
+
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:mapbox="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- MapView for displaying the Mapbox map -->
+    <com.mapbox.maps.MapView
+        android:id="@+id/mapView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        mapbox:mapbox_styleUri="mapbox://styles/mapbox/streets-v12" />
+
+</RelativeLayout>
+Configure a style
+
+Depending on which map style you choose, you have different configuration options available to customize aspects of your style such as fonts, colors, and more.
+
+Mapbox Standard
+
+Mapbox Standard and Mapbox Standard Satellite are our default, all-purpose map styles, and are recommended for most use cases. Unlike our classic styles, Mapbox Standard and Mapbox Standard Satellite provide a limited set of configurations instead of allowing for full manipulation of the style.
+
+Each style can be configured with several options, including light presets, label visibility, feature visibility, color theming, and fonts, and more. You can set these at runtime using the setStyleImportConfigProperty method.
+
+All configuration properties for Mapbox Standard are also available for Mapbox Standard Satellite except for toggling 3D objects and color theming. To learn more about configuration options, refer to the Mapbox Standard Guide and the Mapbox Standard API Reference Docs.
+
+The following sample code shows how to change the 3D lights from the default preset, day, to another preset, dusk by setting the lightPreset property. The code also shows how to hide the point of interest labels by setting the showPointOfInterestLabels property to false. The first argument of setStyleImportConfigProperty is the import id, which defaults to "basemap" when using Mapbox Standard.
+
+When using Android Views, these configurations can be applied after the map loads by calling getStyle. When using Jetpack Compose, you can set these configurations before the map loads using the MapboxStandardStyle block.
+
+
+Android View
+
+Jetpack Compose
+mapView.mapboxMap.getStyle { style ->
+  style.setStyleImportConfigProperty(
+    "basemap", // Mapbox Standard's import id is "basemap"
+    "lightPreset",
+    Value.valueOf("dusk")
+  )
+
+  style.setStyleImportConfigProperty(
+    "basemap",
+    "showPointOfInterestLabels",
+    Value.valueOf(false)
+  )
+}
+All configurations are also available in Mapbox Studio, where you can create a custom style that imports Mapbox Standard or Mapbox Standard Satellite and adjust the configurations as needed.
+
+Classic styles and custom styles
+
+Classic styles and custom styles can be configured by calling methods to update the properties of the style. The most common configurations are updates to layer properties, such as changing the color of a line or the visibility of a label.
+
+For example, you may want to hide an existing layer by setting its visibility to none, or change the color of a fill layer by setting its fill-color property. Learn more about updating layers in the Work with sources and layers guide.
+
+
+Android View
+
+Jetpack Compose
+mapView.mapboxMap.getStyle { style ->
+  style.setStyleLayerProperty("water", "fill-color", Value.valueOf("#45d9ca"))
+}
+This approach requires knowing the ids and types of layers in the style and understanding the properties that can be updated for each layer type. You can explore the properties available for a given layer type in the Mapbox Style Specification.
+
+An alternative approach to adding many runtime configuration changes for a classic style is to create a custom style in Mapbox Studio based on the classic style. You can make the desired changes in the style editor and load the custom style in your application.
+
+Change to a different style
+
+You can change the style any time after initializing the map using the MapboxMap loadStyle method.
+
+
+Android View
+
+Jetpack Compose
+mapView.mapboxMap.loadStyle("mapbox://styles/mapbox/dark-v10")
+If you added any layers after map initialized, you will need to re-add them after the new style is loaded or try using the new addPersistentLayer when adding any layers to the initial style.
+
+For Jetpack Compose users, you can change the whole MapboxStyleComposable block to switch between customized styles or strongly typed MapboxStandardStyle or MapboxStandardSatelliteStyle. Layers added to slot or layer position of the MapboxStyleComposable will be added as normal layers once the style is loaded and layers added to the MapboxMap content will be added as persistent layer across different styles.
+
+Work with sources and layers
+
+On this page
+Add and update layers
+Rendering order
+Style domain-specific language
+Add a layer at runtime
+Update a layer at runtime
+Specify order of a layer at runtime for Mapbox Standard and Standard Satellite
+Specify order of a layer at runtime for other styles
+Remove a layer at runtime
+Source types
+Vector
+GeoJSON
+Raster
+Raster DEM
+Image
+Layer types
+Fill layer
+Line layer
+Symbol layer
+Circle layer
+Fill extrusion layer
+Hillshade layer
+Heatmap layer
+Raster layer
+Sky layer
+Background layer
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+Layers define how map features—such as roads, buildings, water, and points of interest—are visually represented in a Mapbox style. Each layer handles rendering specific data from a source, determining its appearance and behavior on the map. With the Mapbox Maps SDK for Android, developers can dynamically add, remove, and change layers to customize their map’s design and functionality.
+
+This guide covers the fundamentals of working with layers, including:
+
+The relationship between sources and layers
+Adding and updating layers at runtime
+Controlling layer order and rendering behavior
+Using different layer types (such as fill, line, symbol, and raster layers)
+Understanding layers is essential for customizing a Mapbox-powered map and displaying data in a visually meaningful way.
+Add and update layers
+
+You can use the Maps SDK to add more styled data to the map at runtime. There are two key concepts to understand when preparing to add a layer to a style at runtime: layers and sources. Sources contain geographic data. They determine the shape of the features you’re adding to the map and where in the world they belong. Layers contain styling information. They determine how the data in a source should look on the map.
+
+Layers in Mapbox Standard
+For Mapbox Standard and Standard Satellite, you only have access to the layers that you add to the style yourself. To manipulate the Standard basemap, see the Configure a Style section.
+A layer is a styled representation of data of a single type (for example polygons, lines, or points) that make up a map style. For example, roads, city labels, and rivers would be three separate layers in a map. There are several layer types (for example fill, line, and symbol). You can read more about layers in the Mapbox Style Specification.
+
+Most layers also require a source. The source provides map data that the Maps SDK can use with a style document to render a visual representation of that data. There are several source types (for example vector tilesets, GeoJSON, and raster data). You can read more about sources in the Mapbox Style Specification.
+
+In the Maps SDK, the Style class exposes the entry point for all methods related to the style object including sources and layers.
+
+Rendering order
+
+Typically, layers are displayed in the order of their declaration, with later layers appearing on top of earlier ones as rendered by the SDK. When using the Mapbox Standard, the display order primarily depends on the layer's slot, while the relative order determines their arrangement within the slot. Layers not associated with slots appear above the entire map, also maintaining their relative order.
+
+If the Globe projection or Terrain is active, the SDK optimizes performance by batching multiple layers together, which may cause layer rearrangements. Layers draped over the globe and terrain, including fill, line, background, hillshade, and raster, are rendered below symbols, regardless of slot placement or the absence of a designated slot.
+
+This means that layers placed with methods such as addLayerAbove(), addLayerAt(), and addLayerBelow() might not appear at the expected layer position for some layer types. If your layer is not positioned in the expected place, try disabling terrain and changing the map's projection to Mercator.
+
+Style domain-specific language
+
+The Style domain-specific language (DSL) is a collection of functions that allows composition of a style in a block that is applied to a receiver class. DSL functions are provided to construct Style, Layer, Source, Light, and Expression classes. The DSL function names match the class name being created, but the first character in the name is lowercase (for example, the DSL function for the CircleLayer class is circleLayer). In cases where there are mandatory constructor parameters of the class, assign the mandatory constructor parameters before the code block. Inside the DSL block, use code completion in Android Studio to find all available receiver functions.
+
+With the Style DSL, authoring or updating map styles is like writing style JSON directly. The higher-level style API is exposed as DSL, allowing construction of a StyleExtension object using the same paradigm as creating Layer, Source, and Light classes using DSL and using the overloaded operator and inside the Style DSL closure to add layers, sources, or light to the StyleExtension.
+
+Below is an example using the Style DSL to add a GeoJsonSource and a circle layer:
+
+
+Android View
+
+Jetpack Compose
+
+mapView.mapboxMap.subscribeMapLoadingError {
+  // Error occurred when loading the map, try to handle it gracefully here
+}
+mapView.mapboxMap.loadStyle(
+  style(style = Style.TRAFFIC_DAY) {
+    +geoJsonSource(id = "earthquakes") {
+      data(GEOJSON_URL)
+      cluster(false)
+    }
+    +circleLayer(layerId = "earthquakeCircle", sourceId = "earthquakes") {
+      circleRadius(get { literal("mag") })
+      circleColor(Color.RED)
+      circleOpacity(0.3)
+      circleStrokeColor(Color.WHITE)
+    }
+  }
+) { style ->
+  // Map is set up and the style has loaded. Now you can add data or make other map adjustments.
+}
+Sample code throughout this guide uses the Style DSL.
+
+Add a layer at runtime
+
+To add a new layer to the map at runtime, start by adding a source using the Style’s addSource method. It is important that you add the source for a new layer before attempting to add the layer itself because the source is a required parameter for most layer types.
+
+Then, you’ll use the addLayer method to add the layer to the style. When adding the style layer, you will specify:
+
+A unique ID that you assign to the new layer
+The layer type (for example fill, line, or symbol)
+What data to use by referencing a source
+The appearance of the data by setting various properties (for example color, opacity, and language)
+The sample code below illustrates how to add a GeoJSON source and then add and style a line layer that uses the data in that source.
+
+
+Android View
+
+Jetpack Compose
+
+// Get the style
+mapView.mapboxMap.getStyle { style ->
+  // Specify a unique string as the source ID (SOURCE_ID)
+  // and reference the location of source data
+  style.addSource(
+    geoJsonSource(SOURCE_ID) {
+      data("asset://from_crema_to_council_crest.geojson")
+    }
+  )
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and reference the source ID (SOURCE_ID) added above.
+  style.addLayer(
+    lineLayer(LAYER_ID, SOURCE_ID) {
+      lineColor(ContextCompat.getColor(context, R.color.black))
+      lineWidth(3.0)
+    }
+  )
+}
+The exact available properties available when adding a source and layer varies by source type and layer type. Read more about source types and layer types below.
+
+Update a layer at runtime
+
+You can also update the style of any layer at runtime using the layer's unique layer ID with Style's getLayer or getLayerAs method and defining style properties.
+
+The sample code below illustrates how to get an existing layer by referencing a layer ID and updating the value of the fillOpacity's value.
+
+Note for Jetpack Compose extension, you can drive layer properties for runtime-added layer through mutable state, and for layers from style JSON, you can use imperative API within a MapEffect.
+
+
+Android View
+
+Jetpack Compose
+
+// Get the style
+mapView.mapboxMap.getStyle { style ->
+  // Get an existing layer by referencing its
+  // unique layer ID (LAYER_ID)
+  val layer = style.getLayerAs<FillLayer>(LAYER_ID)
+  // Update layer properties
+  layer?.fillOpacity(0.7)
+}
+The exact available properties available when updating a layer varies by layer type. Read more about layer types below.
+
+Specify order of a layer at runtime for Mapbox Standard and Standard Satellite
+
+Mapbox Standard and Standard Satellite uses slots to specify where custom data layers can be added. Slots are predefined locations in the Standard and Standard Satellite basemaps where your layer can be inserted. To add custom layers in the appropriate location in the Standard basemap layer stack, Standard and Standard Satellite offers 3 carefully designed slots that you can leverage to place your layer. These slots will stay stable, and you can be sure that your own map won't break even as the basemap updates over time.
+
+Slot	Description
+bottom	Above polygons (land, landuse, water, etc.)
+middle	Above lines (roads, etc.) and behind 3D buildings
+top	Above POI labels and behind Place and Transit labels. Designed to be used with the symbol layers.
+not specified	Above all existing layers in the style
+Here’s an example of how to assign a slot to a layer:
+
+
+Android View
+
+Jetpack Compose
+
++lineLayer(layerId = "line-layer", sourceId = "line-layer") {
+  lineColor(rgb(255.0, 165.0, 0.0))
+  slot("middle")
+}
+Make sure to use slots instead of layer ids when inserting a custom layer into the Standard or Standard Satellite basemap. If you want to order custom layers relative to each other, you can use the methods addLayerAbove, addLayerAt and addLayerBelow, or the Style DSL method layerAtPosition.
+
+Specifying position of a layer when adding it to a style
+When importing the Standard Style, the LayerPosition is only applicable to custom layers you have added yourself. If you add two layers to the same slot with a specified layer position the latter will define the order of the layers in that slot.
+Specify order of a layer at runtime for other styles
+
+Map styles contains many individual layers (for example, roads, buildings, labels, and more) that are stacked on top of each other. You can change the position of a layer at runtime using the moveStyleLayer API. The sample code below illustrates how to move an existing layer with the ID "population" below the layer with the ID "state-labels".
+
+
+Android View
+
+Jetpack Compose
+
+// Get the style
+mapView.mapboxMap.getStyle { style ->
+  // Move position of the population layer
+  // below the state-labels layer
+  style.moveStyleLayer("population", LayerPosition(null, "state-labels", null))
+}
+Specify position of a layer when adding it to a style
+By default, when you add a new layer to the style, it is placed on top of all the other layers. You can specify where the new layer is positioned relative to existing layers using layerAtPosition and specify if the layer should be positioned below or above another layer by referencing the layer ID (a string) or at a specific index (an integer).
+
+
+Android View
+
+Jetpack Compose
+// Get the style
+mapView.mapboxMap.getStyle { style ->
+  style.addSource(
+    vectorSource("terrain-data") {
+      url("mapbox://mapbox.mapbox-terrain-v2")
+     }
+  )
+  style.addLayerBelow(
+    lineLayer("terrain-data", "terrain-data") {
+      sourceLayer("contour")
+      lineWidth(1.9)
+    },
+    below = "road-label"
+  )
+}
+Remove a layer at runtime
+
+You can remove a layer from a style using Style's removeStyleLayer.
+
+
+Android View
+
+Jetpack Compose
+
+// Where LAYER_ID is a valid id of a layer that already
+// exists in the style
+mapView.mapboxMap.getStyle { style ->
+  // If a layer with a given layer ID exists in the
+  // style, remove the layer
+  if (style.styleLayerExists(LAYER_ID)) {
+    style.removeStyleLayer(LAYER_ID)
+  }
+}
+Source types
+
+Vector
+
+A vector source, VectorSource, is a vector tileset that conforms to the Mapbox Vector Tile format. A vector source contains geographic features (and their data properties) that have already been tiled. Learn more about the benefits of vector tilesets and how they work in the Vector tiles documentation. For vector tiles hosted by Mapbox, the "url" value should be of the form of mapbox://tilesetid.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the source ID (SOURCE_ID)
+  +vectorSource(SOURCE_ID) {
+    url("mapbox://mapbox.mapbox-terrain-v2")
+  }
+}
+Note
+All style layers that use a vector source must specify a "source-layer" value.
+GeoJSON
+
+A GeoJSON source, GeoJsonSource, is data in the form of a JSON object that conforms to the GeoJSON specification. A GeoJSON source is a collection of one or more geographic features, which may be points, lines, and polygons. Data must be provided via a "data" property, whose value can be a URL or inline GeoJSON.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the source ID (SOURCE_ID)
+  +geoJsonSource(SOURCE_ID) {
+    url("asset://from_crema_to_council_crest.geojson")
+  }
+}
+Note
+See the format of the data used in the sample code above in the Maps SDK example app on GitHub.
+Raster
+
+A raster source, RasterSource, is a raster tileset. For raster tiles hosted by Mapbox, the "url" value should be of the form mapbox://tilesetid.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the source ID (SOURCE_ID)
+  +rasterSource(SOURCE_ID) {
+    tileSize(256)
+    tileSet(TILESET_JSON, listOf(SOURCE_URL)) {}
+  }
+}
+Raster DEM
+
+A raster DEM source, RasterDemSource, refers to Mapbox Terrain-DEM (mapbox://mapbox.mapbox-terrain-dem-v1), which is the only supported raster DEM source.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the source ID (SOURCE_ID)
+  +rasterDemSource(SOURCE_ID) {
+    url("mapbox://mapbox.mapbox-terrain-dem-v1")
+    // 514 specifies padded DEM tile and provides better performance than 512 tiles.
+    tileSize(514)
+  }
+}
+Image
+
+An image source, ImageSource, is an image that you supply along with geographic coordinates. Specify geographic coordinates in the "coordinates" array as [longitude, latitude] pairs so the SDK knows at what location in the world to place the image. Each coordinate pair in the "coordinates" array represents the image corners listed in clockwise order: top left, top right, bottom right, bottom left.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the source ID (SOURCE_ID)
+  +imageSource(SOURCE_ID) {
+    coordinates(
+      listOf(
+        listOf(-80.11725, 25.7836),
+        listOf(-80.1397431334, 25.783548),
+        listOf(-80.13964, 25.7680),
+        listOf(-80.11725, 25.76795)
+      )
+    )
+  }
+}
+Layer types
+
+Fill layer
+
+A fill style layer, FillLayer, renders one or more filled (and optionally stroked) polygons on a map. You can use a fill layer to configure the visual appearance of polygon or multipolygon features.
+
+
+To add a fill layer you need to first add a vector or GeoJSON source that contains polygon data. Then you can use the available properties in the FillLayer class to customize the appearance of the layer (for example, the color, opacity, or pattern).
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +fillLayer(LAYER_ID, SOURCE_ID) {
+    fillColor(ContextCompat.getColor(context, R.color.black))
+    fillOpacity(0.5)
+  }
+}
+RELATED
+FillLayer
+A filled polygon with an optional stroked border.
+EXAMPLE
+Tint a fill layer
+Add an image to a style and use it to display a pattern in the landuse FillLayer in the Mapbox Streets style.
+Line layer
+
+A line style layer, LineLayer, renders one or more stroked polylines on the map. You can use a line layer to configure the visual appearance of polyline or multipolyline features.
+
+Map with a light gray line along a trail.
+To add a line layer, you need to first add a vector or GeoJSON source that contains line data. Then you can use the available properties in the LineLayer class to customize the appearance of the layer (for example, the color, width, or dasharray).
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +lineLayer(LAYER_ID, SOURCE_ID) {
+    lineColor(ContextCompat.getColor(this@DrawPolygonActivity, R.color.black))
+    lineWidth(3.0)
+  }
+}
+RELATED
+LineLayer
+A stroked line.
+EXAMPLE
+Draw a GeoJSON line
+Load a polyline to a style using GeoJsonSource and display it on a map using LineLayer.
+Symbol layer
+
+A symbol style layer, SymbolLayer, renders icon and text labels at points or along lines on a map. You can use a symbol layer to configure the visual appearance of labels for features in vector tiles.
+
+
+
+To add a symbol layer, you need to first add a vector or GeoJSON source that contains point data. If you want to use icons in this layer, you also need to add images to the style before adding the layer. Then you can use the available properties in the SymbolLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +symbolLayer(LAYER_ID, SOURCE_ID) {
+    // set a few properties
+  }
+}
+RELATED
+SymbolLayer
+An icon or a text label.
+EXAMPLE
+Display multiple icon images in a symbol layer
+Add point data and several images to a style and use the switchCase and get expressions to choose which image to display at each point in a SymbolLayer based on a data property.
+Circle layer
+
+A circle style layer, CirleLayer, renders one or more filled circles on a map. You can use a circle layer to configure the visual appearance of point or point collection features in vector tiles. A circle layer renders circles whose radii are measured in screen units.
+
+
+To add a circle layer, you need to first add a vector or GeoJSON source that contains point data. Then you can use the available properties in the CircleLayer class to customize the appearance of the layer (for example, radius, color, or offset).
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +circleLayer(LAYER_ID, SOURCE_ID) {
+    // set a few properties
+  }
+}
+RELATED
+CircleLayer
+A filled circle.
+EXAMPLE
+Style circles categorically
+Add point data to a style from a vector tileset and use the match and get expressions to assign the color of each point in a CircleLayer based on a data property.
+Fill extrusion layer
+
+A fill-extrusion, FillExtrusionLayer, style layer renders one or more filled (and optionally stroked) extruded (3D) polygons on a map. You can use a fill-extrusion layer to configure the extrusion and visual appearance of polygon or multipolygon features.
+
+
+To add a fill extrusion layer, you need to first add a vector or GeoJSON source that contains polygon data. Often you will want the data to contain a data property that you will use to determine the height of extrusion of each feature. This may be a physical height in meters or a way to illustrate a non-physical attribute of the area like population in Census blocks. Once you've added an appropriate source, you can use the available properties in the FillExtrusionLayer class to customize the appearance of the layer (for example, the height, opacity, or color).
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +fillExtrusionLayer(LAYER_ID, SOURCE_ID) {
+    fillExtrusionHeight(
+      get("height")
+    )
+  }
+}
+Note
+This example uses expressions to assign a value based on a data property. Read more about expressions in the Use expressions guide.
+RELATED
+FillExtrusionLayer
+An extruded (3D) polygon.
+EXAMPLE
+Display building extrusions
+Extrude the building layer in the Mapbox Light style using FillExtrusionLayer and set up the light position.
+Hillshade layer
+
+A hillshade style layer, HillshadeLayer, renders digital elevation model (DEM) data on the client-side.
+
+The implementation only supports Mapbox Terrain RGB and Mapzen Terrarium tiles. You must add either Mapbox Terrain RGB or Mapzen Terrarium as a source before adding a hillshade layer. Once you've added an appropriate source, you can use the available properties in the HillshadeLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +hillshadeLayer(LAYER_ID, SOURCE_ID) {
+    // set a few properties
+  }
+}
+RELATED
+HillshadeLayer
+Client-side hillshading visualization based on DEM data. The implementation only supports Mapbox Terrain RGB and Mapzen Terrarium tiles.
+Heatmap layer
+
+A heatmap style layer, HeatmapLayer, renders a range of colors to represent the density of points in an area.
+
+
+To add a heatmap layer, you need to first add a vector or GeoJSON source that contains point data. Then you can use the available properties in the HeatmapLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +heatmapLayer(LAYER_ID, SOURCE_ID) {
+    // set a few properties
+  }
+}
+RELATED
+HeatmapLayer
+A heatmap.
+EXAMPLE
+Visualize data as a heatmap
+Add earthquake frequency data to a style from a GeoJSON file and render it on a map using a HeatmapLayer.
+Raster layer
+
+A raster style layer, RasterLayer, renders raster tiles on a map. You can use a raster layer to configure the color parameters of raster tiles.
+
+To add a raster layer, you need to first add a raster source. Then you can use the available properties in the RasterLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  // and assign the source ID added above.
+  +rasterLayer(LAYER_ID, SOURCE_ID) {
+    // set a few properties
+  }
+}
+RELATED
+RasterLayer
+Raster map textures such as satellite imagery.
+EXAMPLE
+Add animated weather data
+Load a raster image to a style using ImageSource and display it on a map as animated weather data using RasterLayer
+EXAMPLE
+(Compose) Add animated weather data
+Load a raster image to a style using ImageSource and display it on a map as animated weather data using RasterLayer
+Sky layer
+
+A sky style layer, SkyLayer, renders a stylized spherical dome that encompasses the entire map and is automatically rendered behind all layers. This can be used to fill the area above the horizon with a simulated sky that illustrates a particular time-of-day, or stylized custom gradients.
+
+
+You can use the available properties in the SkyLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  +skyLayer(LAYER_ID) {
+    // set a few properties
+  }
+}
+RELATED
+SkyLayer
+A spherical dome around the map that is always rendered behind all other layers.
+Background layer
+
+The background style layer, BackgroundLayer, covers the entire map. Use a background style layer to configure a color or pattern to show below all other map content. If the background layer is transparent or omitted from the style, any part of the map view that does not show another style layer is transparent.
+
+You can use the available properties in the BackgroundLayer class to customize the appearance of the layer.
+
+
+Android View
+
+Jetpack Compose
+
+style {
+  // Specify a unique string as the layer ID (LAYER_ID)
+  +backgroundLayer(LAYER_ID) {
+    // set a few properties
+  }
+}
+RELATED
+BackgroundLayer
+The background color or pattern of the map.
+Camera position
+
+On this page
+Set camera position
+Set camera on map initialization
+Set after map initialization
+Set camera for Jetpack Compose
+Set camera based on device location
+Fit the camera to a given shape
+Listen for camera changes
+Get camera position
+Restrict camera
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The Mapbox Maps SDK for Android gives you complete control over the position of the map camera. The camera's location and behavior is defined by its properties:
+
+center: The longitude and latitude at which the camera is pointed.
+bearing: The visual rotation of the map. The bearing value is the compass direction the camera points to show the user which way is "up". For example, a bearing of 90° orients the map so that east is up.
+pitch: The visual tilt of the map. A pitch of 0° is perpendicular to the surface, looking straight down at the map, while a greater value like 60° looks ahead towards the horizon.
+zoom: The zoom level specifies how close the camera is to the features being viewed. At zoom level 0, the viewport shows continents and oceans. A middle value of 11 shows city-level details, and at a higher zoom level the map begins to show buildings and points of interest.
+padding: Insets from each edge of the map. The padding value impacts the location at which the center point is rendered.
+anchor: The point in the map's coordinate system around which zoom and bearing are applied. Mutually exclusive with center.
+PLAYGROUND
+Location Helper
+To experiment with camera pitch, bearing, tilt, and zoom and get values to use in your code, try our Location Helper tool.
+crosshair
+CameraOptions.Builder()
+.center(
+Point.fromLngLat(
+-74.0066,40.7135
+)
+)
+.zoom(15.5)
+.bearing(-17.6)
+.pitch(60.0)
+.build()
+Set camera position
+
+The Maps SDK allows you to set the camera's position on map initialization, or after the map has already been initialized. You can also set the camera's position based on the user's location or fit the camera to a specific shape.
+
+Set camera on map initialization
+
+You can configure many of your map's characteristics, including the starting camera position or the location of the compass on the screen, in your activity's layout file.
+
+<com.mapbox.maps.MapView
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
+  xmlns:mapbox="http://schemas.android.com/apk/res-auto"
+  android:id="@+id/mapView"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  mapbox:mapbox_cameraTargetLat="40.7128"
+  mapbox:mapbox_cameraTargetLng="-74.0060"
+  mapbox:mapbox_cameraZoom="9.0"
+/>
+When you add a map to your application programmatically instead of using XML, specify the camera position when you initialize the map by defining CameraOptions, passing those options to MapInitOptions, and using those options when initializing the MapView. This approach is best if you know what part of the world you want to show a user first. Since the SDK will load the tiles around the specified location first, the map may appear to load faster.
+
+CameraOptions parameters are optional. For any parameters that aren't specified, the SDK will use the default value.
+
+// set initial camera position
+val initialCameraOptions = CameraOptions.Builder()
+  .center(Point.fromLngLat(-74.0066, 40.7135))
+  .pitch(45.0)
+  .zoom(15.5)
+  .bearing(-17.6)
+  .build()
+
+val mapInitOptions = MapInitOptions(
+    context = this,
+    mapOptions = mapOptions,
+    plugins = plugins,
+    cameraOptions = initialCameraOptions,
+    textureView = true
+  )
+mapView = MapView(this, mapInitOptions)
+
+Error. Click to reload
+Default camera position
+If you don't specify the camera position when the style is loaded, default values will be used. If the style being loaded has center, bearing, pitch, and zoom properties defined, the position will be determined by those values. If these properties are not defined in the style JSON, the map will be centered on the coordinates 0,0 with a bearing and pitch of 0 at zoom level 0.
+Set after map initialization
+
+In some cases you may want to set the camera's position after the map has been initialized based on an event or user interaction. For example, you may want to center the map camera on an annotation when a user clicks on it.
+
+val pointAnnotationManager = mapView.annotations.createPointAnnotationManager().apply {
+  // listen for click event
+  addClickListener(
+    OnPointAnnotationClickListener {
+      // define camera position
+      val cameraPosition = CameraOptions.Builder()
+        .zoom(14.0)
+        .center(it.point)
+        .build()
+      // set camera position
+      mapView.mapboxMap.setCamera(cameraPosition)
+      true
+    }
+  )
+}
+EXAMPLE
+Change camera position on map click
+After the map has been initialized, use OnMapClickListener to listen for a user action, then change the camera position using flyTo.
+Set camera for Jetpack Compose
+
+With Jetpack Compose extension, you can set the camera with MapViewportState. You can set the initial value with rememberMapViewportState initialization block, and hoist the map viewport state to interact with camera later based on user interactions.
+
+val mapViewportState = rememberMapViewportState {
+  // set initial camera position
+  setCameraOptions {
+    center(Point.fromLngLat(-74.0066, 40.7135))
+    pitch(45.0)
+    zoom(15.5)
+    bearing(-17.6)
+  }
+}
+MapboxMap(
+  modifier = Modifier.fillMaxSize(),
+  mapViewportState = mapViewportState,
+  onMapClickListener = { clickedPoint ->
+    // listen for click event and ease to the clicked point
+    mapViewportState.easeTo(
+      cameraOptions {
+        center(clickedPoint)
+      }
+    )
+    true
+  }
+)
+EXAMPLE
+(Compose) Map viewport animation
+Showcase the camera animations based on MapViewportState API
+Set camera based on device location
+
+You can set the camera based on the location of the device. Users must grant permission before an app can access information about their location. For more information about asking for the user's location, see the User location guide.
+
+After the user has granted this permission, you can pass their location to the app and center the camera on it.
+
+GUIDE
+Use Viewport API to track location
+Learn how to use high level Viewport API to track device location.
+
+Android View
+
+Jetpack Compose
+
+// Get the user's location as coordinates
+private val onIndicatorBearingChangedListener = OnIndicatorBearingChangedListener {
+  mapView.mapboxMap.setCamera(CameraOptions.Builder().bearing(it).build())
+}
+
+private val onIndicatorPositionChangedListener = OnIndicatorPositionChangedListener {
+  mapView.mapboxMap.setCamera(CameraOptions.Builder().center(it).build())
+  mapView.gestures.focalPoint = mapView.mapboxMap.pixelForCoordinate(it)
+}
+...
+
+// Pass the user's location to camera
+mapView.location.addOnIndicatorPositionChangedListener(onIndicatorPositionChangedListener)
+mapView.location.addOnIndicatorBearingChangedListener(onIndicatorBearingChangedListener)
+
+Error. Click to reload
+EXAMPLE
+Location component
+Shows location puck on the map
+EXAMPLE
+(Compose) Location component
+Shows location puck on the map
+You can also set the camera position to update as the user's location changes. For example, the map can stay centered on a user's location as they walk down the street.
+
+
+Error. Click to reload
+EXAMPLE
+Display the user's location
+Use OnMoveListener and LocationComponentPlugin to update the camera based on a user's location.
+Fit the camera to a given shape
+
+You can position the camera to fit a specified shape within the viewport. MapboxMap includes a convenience method cameraForCoordinates to generate a CameraOptions based on given coordinates or geometries.
+
+This example uses cameraForCoordinates to set the camera view on the triangle defined in triangleCoordinates:
+
+
+Android View
+
+Jetpack Compose
+// Create a polygon
+val triangleCoordinates = listOf(
+  Point.fromLngLat(-3.363937, -10.733102),
+  Point.fromLngLat(1.754703, -19.716317),
+  Point.fromLngLat(-15.747196, -21.085074),
+  Point.fromLngLat(-3.363937, -10.733102)
+)
+// Convert to a camera options from given coordinates and padding
+mapboxMap.cameraForCoordinates(
+  coordinates = triangleCoordinates,
+  camera = cameraOptions { },
+  coordinatesPadding = EdgeInsets(50.0, 50.0, 50.0, 50.0),
+  maxZoom = null,
+  offset = null
+  ) { cameraPosition ->
+    // Set camera position
+    mapboxMap.setCamera(cameraPosition)
+  }
+EXAMPLE
+Fit the camera to a set of coordinates
+Use cameraForCoordinates to set the camera view to the specified coordinates.
+Listen for camera changes
+
+The Maps SDK provides camera change callbacks that can tell you whether any camera change events have happened. The SDK gives different camera listeners to determine if the camera change event was caused by a user gesture, built-in API animations, or a developer-controlled movement.
+
+
+Android View
+
+Jetpack Compose
+
+val callback = CameraChangedCallback { cameraChanged ->
+  // Do something when the camera position changes
+}
+
+// Subscribe the camera changed event
+val cancelable = mapboxMap.subscribeCameraChanged(callback)
+
+// To cancel the subscription
+cancelable.cancel()
+
+// Note that the subscription will be automatically canceled when the map is destroyed.
+EXAMPLE
+Listen for camera changes to update an inset map
+This example shows an inset map on a larger map and uses OnCameraChangeListener to listen for camera changes on the keep the two map's cameras in sync.
+Get camera position
+
+Once the map has been initialized, you can retrieve the camera's position to understand what the user is viewing, and other camera-related information, using the CameraState property.
+
+For example, you could display the longitude and latitude of the center point of the map as text:
+
+
+Android View
+
+Jetpack Compose
+
+// Get the cameraState.center
+val center = mapView.mapboxMap.cameraState.center
+Restrict camera
+
+Use MapboxMap's setBounds function to restrict a user's panning to limit the map camera to a chosen area.
+
+For example, you could create a location-specific app experience in which a user's panning behavior is limited to a specific country, like Iceland.
+
+
+Android View
+
+Jetpack Compose
+
+// Define camera bounds
+private val cameraBoundsOptions = CameraBoundsOptions.Builder()
+  .bounds(
+    CoordinateBounds(
+      Point.fromLngLat(-122.66336, 37.492987),
+      Point.fromLngLat(-122.250481, 37.87165),
+      false
+    )
+  )
+  .minZoom(10.0)
+  .build()
+// Fit camera to the bounding box
+mapboxMap.setBounds(cameraBoundsOptions)
+Animations
+
+On this page
+Animation types
+High-level animation APIs
+Mid-level animation APIs
+Low-level animation APIs
+Start a camera animation
+Start a high-level animation event
+Start a mid-level animation event
+Start a low-level animation event
+Listen for camera animation events
+Listen for high-level animation API events
+Listen for lower-level animation API events
+Listen for all animation events
+Listen for specific animation value change events
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+Camera animations are the means by which camera settings are changed from old values to new values over a period of time. The Maps SDK for Android provides expressive ways of controlling animations. You can animate the camera to move to a new center location and to update the bearing, pitch, zoom, padding, and anchor. Each of these camera properties can be animated independently through the Maps SDK camera animation system.
+
+Note
+Only one animation instance per camera setting type can run at a time. For example, if an animator that changes the camera's bearing is running, then starting another bearing operator at the same time will cancel the first one and then start running. This prevents the map from jumping between two or more animators of the same type.
+Animation types
+
+The Maps SDK provides high-level, mid-level, and low-level animation APIs that allow you to transition the camera from old values to new values.
+
+Using animations to change camera values
+If you use MapboxMap.setCamera to change camera values instead of using an animator, the camera position will change abruptly to the new values instead of an animated change.
+High-level animation APIs
+
+The Maps SDK has a set of ready-to-use functions for animating map camera transitions. These high-level APIs allow you to implement animations quickly, but have limited options for customization. The built-in animation types are:
+
+flyTo changes the camera's position from the old values to the new values using a combination of zooming and panning in an animated transition that evokes flight.
+easeTo gradually changes the camera's position with an animated transition from the old values to the new values.
+rotateBy rotates the map to a different bearing with an animated transition.
+scaleBy animates a change in the size of the images on the map.
+pitchBy animates a change in the pitch of the map.
+moveBy instantaneously re-positions the camera with a quick animated transition from the old values to the new values.
+You can call these functions with the MapboxMap object. Different parameters will be used depending on the function type, but all these functions support customizing the animation duration and interpolation.
+
+It's important to note that only one high-level animation can run at a time. If a high-level animation starts while another high-level animation is already running, the running animation will be canceled even if the new high-level animation only changes map camera parameters the running one does not use.
+
+
+EXAMPLE
+Fly-to camera animation
+Animate the camera changes with the fly-to animation. This causes the camera to ease from a starting point to an end destination.
+EXAMPLE
+(Compose) Map viewport animation
+Showcase the camera animations based on MapViewportState API
+Mid-level animation APIs
+
+There are several mid-level animation APIs that you can use to implement animations with more customization options including running multiple animations simultaneously. These APIs offer more flexibility, but require writing more custom code.
+
+Any number of animators extending CameraAnimator can be created and started either sequentially or in parallel. In that case, you do not need to register and unregister those animators.
+
+For Jetpack Compose users
+Mapbox Jetpack Compose extension does not directly support mid-level animation APIs, you can still use mid-level animations within MapEffect, but it might break the MapViewportState.
+Low-level animation APIs
+
+The Maps SDK also has a set of low-level animation APIs. Each camera property can be animated independently through the Android SDK animator framework.
+
+With the low-level animation APIs, any number of animators extending CameraAnimator can be created, but you must also register them in the CameraAnimationsPlugin for the map camera to work properly and unregister them when they are no longer needed. You drive the animation lifecycle (start, end, and cancel) directly with the low-level animation API.
+
+For Jetpack Compose users
+Mapbox Jetpack Compose extension does not directly support low-level animation APIs, you can still use mid-level animations within MapEffect, but it might break the MapViewportState.
+Start a camera animation
+
+Start a high-level animation event
+
+Camera animations created using the high-level animations APIs start automatically when they are called. For example, the camera animation will start after you call mapboxMap.easeTo(cameraOptions, mapAnimationOptions), or mapViewportState.easeTo(cameraOptions, mapAnimationOptions) in case of Jetpack Compose.
+
+Start a mid-level animation event
+
+To start camera animations created using the mid-level animation APIs, use CameraAnimationsPlugin.playAnimatorsTogether (to run the animations at the same time) or CameraAnimationsPlugin.playAnimatorsSequentially (to run the animations one by one).
+
+This example runs an animation set that consists of bearing and pitch animators executing simultaneously. It's important to note that the bearing and pitch animator objects cannot be reused later without explicit registration, since the playAnimatorsTogether function registers them on animation start and unregisters them on animation end or on cancel.
+
+import com.mapbox.maps.plugin.animation.CameraAnimatorOptions.Companion.cameraAnimatorOptions
+
+mapView.camera.apply {
+    val bearing = createBearingAnimator(cameraAnimatorOptions(18.0, 20.0) { startValue(15.0) }) {
+          duration = 8500
+          interpolator = AnticipateOvershootInterpolator()
+    }
+    val pitch = createPitchAnimator(cameraAnimatorOptions(30.0) { startValue(15.0) }) {
+          duration = 2000
+    }
+    playAnimatorsTogether(bearing, pitch)
+}
+EXAMPLE
+Start camera animations sequentially
+Use playAnimatorsSequentially to update the camera's zoom, pitch, and bearing in sequence.
+Start a low-level animation event
+
+
+EXAMPLE
+Using custom camera animations
+Animate the map camera to a new position using camera animators. Individual camera properties such as zoom, bearing, and center coordinate can be animated independently.
+With the low-level animation APIs, any number of animators extending CameraAnimator can be created, but you must also register them in Mapbox Maps Animation Plugin for the map camera to work properly and unregister them when they are no longer needed. You drive the animation lifecycle (start, end, and cancel) directly with the low-level animation API.
+
+To start camera animations created using the low-level animation APIs, use the CameraAnimator.start method. For the animator to start, you need to register it first using CameraAnimationsPlugin.registerAnimators.
+
+This example constructs three independent animations (bearing, zoom, and pitch) and creates an animation set so they execute simultaneously. The animation can be customized by using the flexible low-level APIs.
+
+import com.mapbox.maps.plugin.animation.CameraAnimatorOptions.Companion.cameraAnimatorOptions
+
+val plugin = mapView.camera
+val bearing = plugin.createBearingAnimator(cameraAnimatorOptions(160.0) { startValue = 0.0 }) {
+  duration = 8500
+  interpolator = AnticipateOvershootInterpolator()
+}
+plugin.registerAnimators(bearing)
+bearing.apply {
+  addListener(
+    object : Animator.AnimatorListener {
+      override fun onAnimationStart(animation: Animator) {}
+
+      override fun onAnimationEnd(animation: Animator) {
+        (animation as? CameraAnimator<*>)?.let {
+          plugin.unregisterAnimators(it)
+        }
+      }
+
+      override fun onAnimationCancel(animation: Animator) {
+        (animation as? CameraAnimator<*>)?.let {
+          plugin.unregisterAnimators(it)
+        }
+      }
+
+      override fun onAnimationRepeat(animation: Animator) {}
+    }
+  )
+  start()
+}
+EXAMPLE
+Low-level animation API event
+Use the CameraOperator.start method to start a new animation that changes the camera's pitch.
+Listen for camera animation events
+
+The Maps SDK provides camera animation event listeners that can tell you if a specific event has happened or if any camera animation events have happened. The possible events are:
+
+The animation is about to start
+The animation is about to interrupt an already-running animation of the same type
+The animation is to end
+The animation is about to be canceled
+Listen for high-level animation API events
+
+If you are using the high-level animations APIs and want to listen to the whole high-level animation as one instance, provide AnimatorListener as part of the high level animation APIs, for example flyTo when starting the animation.
+
+
+Android View
+
+Jetpack Compose
+
+mapboxMap.flyTo(
+  cameraOptions = cameraOptions,
+  animatorListener = object : Animator.AnimatorListener {
+    override fun onAnimationStart(animation: Animator) {
+      // code to be invoked when animation starts
+    }
+
+    override fun onAnimationEnd(animation: Animator) {
+      // code to be invoked when animation ends
+    }
+
+    override fun onAnimationCancel(animation: Animator) {
+      // code to be invoked when animation is canceled
+    }
+
+    override fun onAnimationRepeat(animation: Animator) {
+      // code to be invoked when animation repeats
+    }
+  }
+)
+Listen for lower-level animation API events
+
+If you are using the mid-level or low-level animation APIs and want to listen to a specific event, or all events, you can add the regular Android SDK listener as CameraAnimator.addListener(listener: AnimatorListener) to any CameraAnimator, which extends Android's ValueAnimator with all existing functionality.
+
+lowOrMidLevelAnimator.addListener(
+    object : Animator.AnimatorListener {
+        override fun onAnimationStart(animation: Animator) {
+          // code to be invoked when animation starts
+        }
+        override fun onAnimationEnd(animation: Animator) {
+          // code to be invoked when animation ends
+        }
+        override fun onAnimationCancel(animation: Animator) {
+          // code to be invoked when animation is canceled
+        }
+        override fun onAnimationRepeat(animation: Animator) {
+          // code to be invoked when animation repeats
+        }
+    }
+)
+Listen for all animation events
+
+If you want to listen to all events happening to the camera animation system, use CameraAnimationsPlugin .addCameraAnimationsLifecycleListener(listener: CameraAnimationsLifecycleListener). It will report all the logic when an animator of any type (low-level, mid-level, and high-level animation APIs) is about to start, stop, be canceled, or be interrupted. Register the listener using CameraAnimationsPlugin.addCameraAnimationsLifecycleListener and unregister it using CameraAnimationsPlugin.removeCameraAnimationsLifecycleListener.
+
+Listen for specific animation value change events
+
+The Maps SDK CameraAnimationsPlugin also provides methods to listen to specific value change events:
+
+Change in center point: CameraAnimationsPlugin.addCameraCenterChangeListener
+Change in bearing: CameraAnimationsPlugin.addCameraBearingChangeListener
+Change in pitch: CameraAnimationsPlugin.addCameraPitchChangeListener
+Change in zoom: CameraAnimationsPlugin.addCameraZoomChangeListener
+Change in padding: CameraAnimationsPlugin.addCameraPaddingChangeListener
+Change in anchor point: CameraAnimationsPlugin.addCameraAnchorChangeListener
+
+Gestures
+
+On this page
+Default map gestures
+Enable and disable default gestures
+Enable or disable default gestures
+Configure scroll behavior
+Configure pinch behavior
+Listen for gesture events
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The Maps SDK includes the Mapbox Gestures for Android library for gesture detection based on user input. You can allow users to move the map using default gestures, enable and disable specific default gestures, or specify completely custom behavior for one or more gestures.
+
+Note
+The Mapbox Gestures for Android library wraps GestureDetectorCompat and ScaleGestureDetector. It also introduces implementations of rotate, move, shove, and tap gesture detectors.
+Default map gestures
+
+By default the following standard Android gestures will allow the user to explore the map:
+
+Scroll around: Hold one finger down on the screen and move it in any direction.
+Adjust pitch: Hold two fingers down on the screen and move them vertically across the screen.
+Gradually zoom in/out: Pinch with two fingers to adjust the zoom level. Move fingers apart to zoom in, move fingers closer together to zoom out.
+Rotate: Hold two fingers down on the screen and move them in a circular motion to rotate the map (adjust the bearing).
+Zoom in one zoom level: Double tap on the screen with one finger to zoom in on the map's anchor point.
+Zoom out one zoom level: Double tap on the screen with two fingers to zoom out with the map's anchor point centered.
+Quick zoom: Double tap and drag up on the screen to zoom out, or double tap and drag down to zoom in.
+The single tap gesture is used by the annotation managers to detect taps on annotations. You can add a target-action pair to this gesture recognizer to be notified when a single tap occurs on the map. For more details on annotation-related gestures, see the Markers and Annotations guide's Interactivity section.
+
+PLAYGROUND
+Location Helper
+To experiment with camera pitch, bearing, tilt, and zoom and get values to use in your code, try our Location Helper tool.
+Enable and disable default gestures
+
+Adjust or completely disable scroll, rotate, pinch, and double tap gesture recognition by configuring GestureSettings.
+
+Enable or disable default gestures
+
+You can find a full list of gestures that can be enabled or disabled in the GestureSettings documentation. For example, to prevent users from changing the pitch of the map, set pitchEnabled to false:
+
+
+Android View
+
+Jetpack Compose
+
+mapView.gestures.pitchEnabled = false
+Note
+Disabling map gestures doesn't affect whether you can change the camera position programmatically.
+Configure scroll behavior
+
+There are additional configuration options for scroll gestures.
+
+Use scrollMode to configure the directions in which the map is allowed to move during a scroll gesture. By default, the map will move both horizontally and vertically.
+
+Use scrollDecelerationEnabled to enable or disable the fling behavior after the scroll ends.
+
+Configure pinch behavior
+
+Configure pinch behavior using the following GestureSettings properties:
+
+increasePinchToZoomThresholdWhenRotating -increaseRotateThresholdWhenPinchingToZoom
+focalPoint
+pinchToZoomDecelerationEnabled -rotateDecelerationEnabled
+Listen for gesture events
+
+The GesturesPlugin provides many gesture listeners. For example, you may want to listen for when the user rotates the map to print the bearing in degrees.
+
+
+Android View
+
+Jetpack Compose
+
+val rotateListener = object : OnRotateListener {
+  override fun onRotateBegin(@NonNull detector: RotateGestureDetector) {
+    // Do something when the user starts rotating the map.
+  }
+
+  override fun onRotate(@NonNull detector: RotateGestureDetector) {
+    // Do something while the user rotates the map.
+  }
+
+  override fun onRotateEnd(@NonNull detector: RotateGestureDetector) {
+    // Do something when the user stops rotating the map.
+  }
+}
+gesturesPlugin.addOnRotateListener(rotateListener)
+
+// Don't forget to remove the listener on onStop or onDestroy:
+Interactions API
+
+On this page
+Add an interaction to a map layer
+Add an interaction with featuresets
+Set feature states
+Add an interaction to the map itself
+Interactions order and propagation
+Examples
+Additional Developer Resources
+Mapbox Developer Discord
+Developer Cheatsheet
+Mapbox Support
+Ask AI
+The new Interactions API is a toolset that allows you to handle interactions on layers, pre-defined featuresets in evolving basemap styles like Mapbox Standard, and the map itself. The API is available starting from Maps SDK v11.9.0.
+
+Note
+The Interactions API is an experimental feature of the Android Maps SDK. To build with it, use the following import statement:
+import com.mapbox.maps.MapboxExperimental
+To use the API, you define ClickInteraction or LongClickInteraction interaction handlers that target specific map layers, featuresets, or the map itself. When a user interacts with map features belonging to one of these sets, the API will call the appropriate interaction handler for that feature that was clicked or long-clicked.
+
+Add an interaction to a map layer
+
+Add interactions to the map by indicating the layer that should handle the interaction. The interaction will be triggered when a user clicks or long-clicks on a feature rendered on the specified layer. In Jetpack Compose, place the interactions inside the MapboxMap style using the appropriate interaction handler from styleInteractionsState and in Android View applications, use mapboxMap.addInteraction() to add the interaction:
+
+
+Android View
+
+Jetpack Compose
+
+val token = mapboxMap.addInteraction(
+  ClickInteraction.layer(id = "polygons") { feature, context ->
+    // Handle tap when a feature from "polygons" is clicked.
+    true // stops propagation
+  }
+)
+
+// Cancel the token to remove the interaction. 
+token.cancel()
+The interaction handlers (ClickInteraction) in the examples above will be called each time a user taps a feature rendered on the polygons layer. The handler receives the feature that was clicked and the context containing information about the event.
+
+You can add an interaction at any time, there is no need to wait for the style to load. If the interaction should be active as long as the MapView is alive, then the cancellation token can be omitted. If there is no layer with the name provided, then no interaction will be added.
+
+Add an interaction with featuresets
+
+Interactions can be added not only to a layer, but also to a featureset. Featuresets are named groups of layers that can be defined in an evolving basemap style. In the Mapbox Standard Style, there are predefined Points-of-Interest (POI), Place Labels, and Buildings featuresets that include all appropriate features in the map. You can add interactions to your map that target these featuresets. Use the pre-defined StandardPoi, StandardPlaceLabels, and StandardBuildings featureset descriptors to enable interactions in the Standard Style.
+
+
+Android View
+
+Jetpack Compose
+
+mapboxMap.addInteraction(
+  ClickInteraction.standardPoi { poi, context ->
+    Log.d("Tap at poi:", poi.name!!)
+    true
+  }
+)
+When you use a predefined featureset, such as .standardPoi, the interaction will return a feature of a matching type (here a StandardPoiFeature). This means you will have access to properties specific to that feature type, such as name in the example above. To learn more about typed features that match the predefined featuresets, read the StandardPoiFeature, StandardPlaceLabelsFeature, and StandardBuildingsFeature documentation.
+
+Set feature states
+
+After a feature is returned from the interaction, you can set its feature state. Setting the feature state allows you to control the appearance of individual features within a featureset.
+
+For example, you may want to highlight individual buildings after a user clicks on them. To do this, you would add a ClickInteraction targeting the .standardBuildings featureset. When a user clicks on a building in this featureset, the building feature is returned as a StandardBuildingsFeature. You then set the feature state for this feature's highlight configuration option to true. By default, highlighted buildings will be displayed in blue, as shown in the image below. You can customize the color of highlighted buildings.
+
+
+Error. Click to reload
+
+Android View
+
+Jetpack Compose
+
+mapboxMap.addInteraction(
+  ClickInteraction.standardBuildings { building, _ ->
+    mapboxMap.setFeatureState(building, StandardBuildingsState {
+      highlight(true)
+    })
+    true
+  }
+)
+Each pre-defined featureset in the Standard Style has appropriate configuration options that can be modified at runtime in this way. Explore the StandardPoiState, StandardPlaceLabelsState and StandardBuildingsState to learn more about the specific configuration options available for each featureset.
+
+Add an interaction to the map itself
+
+You can add a special variant of the Click and LongClick interactions that doesn't take any layer or featureset as an argument. This lets you handle taps on the "map itself". This usually happens when user clicks a place on the map where there are no interactive features, or when the event propagated down to the map. context contains information about the interaction event, such as the point where the tap occurred.
+
+
+Android View
+
+Jetpack Compose
+
+mapboxMap.addInteraction(
+  ClickInteraction { context ->
+    Log.d("Click on map itself at:", context.screenCoordinate.toString())
+    true
+  }
+)
+mapboxMap.addInteraction(
+  LongClickInteraction { context ->
+    Log.d("Long click on map itself at:", context.screenCoordinate.toString())
+    true
+  }
+)
+Interactions order and propagation
+
+In the map, there might be many features handling interactions. If a user taps at the point where multiple features are rendered, each of them can have a chance to handle the interaction. The Maps SDK will invoke each interaction handler (ClickInteraction or LongClickInteraction) one by one in the order that features are rendered. The top-most feature will be invoked first. So, if there are multiple interactions added to the same target (such as a layer and a featureset), the interactions added last will be called first.
+
+By default, each interaction handler will completely handle the user interaction and stop propagation. If you want to continue propagating the interaction after the particular interaction handler is triggered, then return false in the callback.
+gesturesPlugin.removeOnRotateListener(rotateListener)
