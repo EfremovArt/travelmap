@@ -81,6 +81,7 @@ flutter:
     - assets/Images/
     - assets/images/
     - assets/Images/map-marker.png
+    - assets/Images/google_logo.png
   # - images/a_dot_burr.jpeg
   # - images/a_dot_ham.jpeg
 

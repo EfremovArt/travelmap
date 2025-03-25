@@ -45,7 +45,7 @@ class HomeScreen extends StatelessWidget {
                   ],
                 ),
               ),
-              
+
               // Главное содержимое - заглушка
               Expanded(
                 child: Center(
@@ -77,7 +77,12 @@ class HomeScreen extends StatelessWidget {
                       const SizedBox(height: 40),
                       ElevatedButton(
                         onPressed: () {
-                          Navigator.pop(context);
+                          // Используем pushNamed вместо pop
+                          Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            '/login',
+                                (route) => false,
+                          );
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
@@ -98,6 +103,35 @@ class HomeScreen extends StatelessWidget {
                           ),
                         ),
                       ),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: () {
+                          // Добавим переход на MainScreen с вкладками
+                          Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            '/main',
+                                (route) => false,
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: Colors.blue.shade800,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                        ),
+                        child: Text(
+                          'Go to Main Screen with Tabs',
+                          style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -108,4 +142,4 @@ class HomeScreen extends StatelessWidget {
       ),
     );
   }
-} 
+}
