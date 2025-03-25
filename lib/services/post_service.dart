@@ -30,6 +30,25 @@ class PostService {
     await prefs.setStringList(_postsKey, postsJson);
   }
   
+  // Обновление существующего поста
+  static Future<void> updatePost(Post updatedPost) async {
+    final prefs = await SharedPreferences.getInstance();
+    final postsJson = prefs.getStringList(_postsKey) ?? [];
+    
+    // Находим и обновляем пост с совпадающим ID
+    final updatedPostsJson = postsJson.map((jsonString) {
+      final post = Post.fromJson(jsonDecode(jsonString));
+      if (post.id == updatedPost.id) {
+        // Заменяем старый пост на обновленный
+        return jsonEncode(updatedPost.toJson());
+      }
+      return jsonString;
+    }).toList();
+    
+    // Сохраняем обновленный список
+    await prefs.setStringList(_postsKey, updatedPostsJson);
+  }
+  
   // Получение постов в определенной области карты
   static Future<List<Post>> getPostsInBounds(GeoLocation southwest, GeoLocation northeast) async {
     final allPosts = await getAllPosts();

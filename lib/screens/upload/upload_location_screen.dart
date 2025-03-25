@@ -27,48 +27,65 @@ class UploadLocationScreen extends StatefulWidget {
   _UploadLocationScreenState createState() => _UploadLocationScreenState();
 }
 
-class _UploadLocationScreenState extends State<UploadLocationScreen> with WidgetsBindingObserver {
-  // Map controllers
+class _UploadLocationScreenState extends State<UploadLocationScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  // Контроллеры и ключи
+  final TextEditingController _searchController = TextEditingController();
+  
+  // Анимация для пульсирующей точки
+  late AnimationController _pulseAnimationController;
+  late Animation<double> _pulseAnimation;
+  
+  // Переменные для работы с картой
   MapboxMap? _mapboxMap;
   PointAnnotationManager? _pointAnnotationManager;
   
-  // Location data
-  GeoLocation? _selectedLocation;
-  String? _locationName;
-  
-  // UI state
-  bool _isMapInitialized = false;
-  bool _isStyleLoaded = false;
-  bool _isMapLoading = false;
+  // Состояние карты
+  bool _isLoading = true;
   String? _error;
   
-  // Search state
-  final TextEditingController _searchController = TextEditingController();
+  // Местоположение и поиск
+  GeoLocation? _currentLocation;
+  GeoLocation? _selectedLocation;
+  String _locationName = '';
   bool _isSearching = false;
   List<SearchResult> _searchResults = [];
-  Timer? _searchDebounce;
   
   // Таймер для проверки загрузки карты
   Timer? _mapLoadingTimer;
-
-  // Constants for the demo location (Moscow)
-  static const double DEMO_LOCATION_LATITUDE = 55.751244;
-  static const double DEMO_LOCATION_LONGITUDE = 37.618423;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // Check location permissions when the screen loads
+    // Инициализация анимации пульсирующей точки
+    _pulseAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+    
+    _pulseAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _pulseAnimationController,
+        curve: Curves.easeInOut,
+      ),
+    );
+    
+    // Инициализация компонентов
+    _isLoading = true;
+    _error = null;
+    
+    // Определяем текущее местоположение при загрузке экрана
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkLocationPermission();
+      _getCurrentLocation();
       
       // Запускаем таймер для проверки загрузки карты
-      _mapLoadingTimer = Timer(const Duration(seconds: 10), () {
-        if (mounted && !_isMapInitialized && _error == null) {
+      _mapLoadingTimer?.cancel(); // Сначала отменяем предыдущий таймер если был
+      _mapLoadingTimer = Timer(const Duration(seconds: 15), () {
+        if (mounted && _isLoading && _error == null) {
           setState(() {
-            _error = "Map loading timeout. Please try again.";
+            _error = "Превышено время ожидания загрузки карты. Попробуйте ещё раз.";
+            _isLoading = false;
           });
         }
       });
@@ -78,8 +95,26 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
   @override
   void dispose() {
     _searchController.dispose();
+    
+    // Останавливаем анимацию
+    _pulseAnimationController.dispose();
+    
+    // Отменяем все таймеры и подписки
     _mapLoadingTimer?.cancel();
-    _searchDebounce?.cancel();
+    
+    // Очистка всех ресурсов карты
+    if (_mapboxMap != null) {
+      try {
+        print("Очистка ресурсов карты в upload_location_screen");
+        // В новых версиях SDK нужно явно освобождать ресурсы
+        _pointAnnotationManager = null;
+        _mapboxMap = null;
+      } catch (e) {
+        print("Ошибка при очистке ресурсов карты в upload_location_screen: $e");
+      }
+    }
+    
+    // Отменяем подписку на жизненный цикл
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -91,7 +126,7 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     // Реагируем на изменения жизненного цикла приложения
     if (state == AppLifecycleState.resumed) {
       // При возвращении в приложение проверяем состояние карты
-      if (_mapboxMap != null && !_isMapInitialized) {
+      if (_mapboxMap != null && !_isLoading) {
         _reinitializeMapIfNeeded();
       }
     }
@@ -102,8 +137,7 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     if (!mounted) return;
     
     setState(() {
-      _isMapInitialized = false;
-      _isStyleLoaded = false;
+      _isLoading = true;
       _error = null;
     });
     
@@ -111,80 +145,487 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     if (mounted) setState(() {});
   }
 
-  void _checkLocationPermission() async {
-    await PermissionsManager.checkLocationPermission(
-      context: context,
-      onPermissionResult: (isGranted) {
-        if (!isGranted && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Разрешения на определение местоположения необходимы для корректной работы карты'),
+  /// Determine current location with extended error handling
+  Future<void> _getCurrentLocation() async {
+    if (!mounted) return;
+    
+    setState(() {
+      _isLoading = true;
+    });
+    
+    print("📍 Starting location determination");
+    
+    try {
+      // First check if location service is enabled
+      bool isLocationServiceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+      print("🔍 Location service status: $isLocationServiceEnabled");
+      
+      if (!isLocationServiceEnabled) {
+        print("❌ Location service is disabled");
+        _showLocationServiceDisabledDialog();
+        if (mounted) {
+          setState(() {
+            _currentLocation = GeoLocation(
+              latitude: MapboxConfig.DEFAULT_LATITUDE,
+              longitude: MapboxConfig.DEFAULT_LONGITUDE
+            );
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+      
+      // Check and request necessary permissions with improved handling
+      geo.LocationPermission permission = await geo.Geolocator.checkPermission();
+      print("📱 Initial permission status: $permission");
+      
+      if (permission == geo.LocationPermission.denied) {
+        // Explicitly request permission
+        permission = await geo.Geolocator.requestPermission();
+        print("📱 After request permission status: $permission");
+      }
+      
+      // Handle all permission cases
+      if (permission == geo.LocationPermission.denied) {
+        print("❌ Location permission denied");
+        _showPermissionDeniedDialog(isPermanent: false);
+        if (mounted) {
+          setState(() {
+            _currentLocation = GeoLocation(
+              latitude: MapboxConfig.DEFAULT_LATITUDE,
+              longitude: MapboxConfig.DEFAULT_LONGITUDE
+            );
+            _isLoading = false;
+          });
+        }
+        return;
+      } else if (permission == geo.LocationPermission.deniedForever) {
+        print("❌ Location permission permanently denied");
+        _showPermissionDeniedDialog(isPermanent: true);
+        if (mounted) {
+          setState(() {
+            _currentLocation = GeoLocation(
+              latitude: MapboxConfig.DEFAULT_LATITUDE,
+              longitude: MapboxConfig.DEFAULT_LONGITUDE
+            );
+            _isLoading = false;
+          });
+        }
+        return;
+      }
+      
+      // Permission granted, get current position with improved timeout
+      print("✅ Permission granted, getting position with timeout");
+      final position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 20) // Increase timeout for better chance of success
+      );
+      
+      print("✅ Position obtained: ${position.latitude}, ${position.longitude}");
+      
+      if (mounted) {
+        setState(() {
+          _currentLocation = GeoLocation(
+            latitude: position.latitude,
+            longitude: position.longitude
+          );
+          // Автоматически выбираем текущую локацию
+          _selectedLocation = _currentLocation;
+          _locationName = "Current Location";
+          _isLoading = false;
+        });
+        
+        // Добавляем маркер текущей позиции, если карта инициализирована
+        if (_mapboxMap != null && _pointAnnotationManager != null) {
+          _addMarkerAtPosition(
+            lat: position.latitude,
+            lng: position.longitude,
+            isCurrentLocation: true
+          );
+          
+          // Перемещаем камеру к текущему местоположению
+          _mapboxMap!.setCamera(
+            CameraOptions(
+              center: Point(
+                coordinates: Position(
+                  position.longitude,
+                  position.latitude
+                )
+              ),
+              zoom: 13.0,
             ),
           );
         }
-      },
-    );
+        
+        // Запускаем геокодинг для получения названия текущего местоположения
+        _reverseGeocode(position.latitude, position.longitude).then((name) {
+          if (mounted && name != null && name.isNotEmpty) {
+            setState(() {
+              _locationName = name;
+              print("✅ Current location name updated: $_locationName");
+            });
+          }
+        });
+      }
+    } catch (e) {
+      print("❌ Error determining location: $e");
+      
+      // Try using last known position as fallback before using Moscow
+      try {
+        print("🔄 Trying to get last known position as fallback");
+        final lastPosition = await geo.Geolocator.getLastKnownPosition();
+        
+        if (lastPosition != null) {
+          print("✅ Last known position found: ${lastPosition.latitude}, ${lastPosition.longitude}");
+          if (mounted) {
+            setState(() {
+              _currentLocation = GeoLocation(
+                latitude: lastPosition.latitude,
+                longitude: lastPosition.longitude
+              );
+              _selectedLocation = _currentLocation;
+              _locationName = "Last Known Location";
+              _isLoading = false;
+            });
+            
+            // Add marker
+            if (_mapboxMap != null && _pointAnnotationManager != null) {
+              _addMarkerAtPosition(
+                lat: lastPosition.latitude,
+                lng: lastPosition.longitude,
+                isCurrentLocation: true
+              );
+              
+              // Перемещаем камеру к последнему известному местоположению
+              _mapboxMap!.setCamera(
+                CameraOptions(
+                  center: Point(
+                    coordinates: Position(
+                      lastPosition.longitude,
+                      lastPosition.latitude
+                    )
+                  ),
+                  zoom: 13.0,
+                ),
+              );
+            }
+            
+            // Запускаем геокодинг для получения названия текущего местоположения
+            _reverseGeocode(lastPosition.latitude, lastPosition.longitude).then((name) {
+              if (mounted && name != null && name.isNotEmpty) {
+                setState(() {
+                  _locationName = name;
+                  print("✅ Last known location name updated: $_locationName");
+                });
+              }
+            });
+            
+            return;
+          }
+        } else {
+          print("⚠️ No last known position available");
+        }
+      } catch (secondError) {
+        print("⚠️ Error getting last known position: $secondError");
+      }
+      
+      // Finally fall back to default coordinates
+      if (mounted) {
+        setState(() {
+          _currentLocation = GeoLocation(
+            latitude: MapboxConfig.DEFAULT_LATITUDE,
+            longitude: MapboxConfig.DEFAULT_LONGITUDE
+          );
+          // Также устанавливаем значение по умолчанию как выбранное
+          _selectedLocation = _currentLocation;
+          _locationName = "Default Location (Moscow)";
+          _isLoading = false;
+          
+          // Если карта уже инициализирована, перемещаем камеру к координатам по умолчанию
+          if (_mapboxMap != null) {
+            _mapboxMap!.setCamera(
+              CameraOptions(
+                center: Point(
+                  coordinates: Position(
+                    MapboxConfig.DEFAULT_LONGITUDE,
+                    MapboxConfig.DEFAULT_LATITUDE
+                  )
+                ),
+                zoom: 10.0,
+              ),
+            );
+          }
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Could not determine your location. Using default location.'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        });
+      }
+    }
   }
 
-  /// Map creation handler
-  void _onMapCreated(MapboxMap mapboxMap) {
-    _mapboxMap = mapboxMap;
-    _isMapInitialized = true;
-    _initializeMap();
-  }
-  
-  /// Map click handler for MapWidget
-  void _onMapClick(context) {
-    // В новой версии, координаты нажатия нужно получить из context.point.coordinates
-    if (context != null && context.point != null) {
-      final point = context.point;
-      if (point != null) {
-        _onMapClickPoint(point);
+  /// Обработчик события создания карты
+  void _onMapCreated(MapboxMap mapboxMap) async {
+    print("🗺️ Карта создана успешно");
+    
+    if (!mounted) {
+      print("⚠️ Widget не прикреплен к дереву, инициализация карты остановлена");
+      return;
+    }
+    
+    try {
+      // Сохраняем ссылку на карту
+      _mapboxMap = mapboxMap;
+      
+      // Устанавливаем стиль карты
+      try {
+        await mapboxMap.style.setStyleURI(MapboxConfig.STREETS_STYLE_URI);
+        print("🎨 Устанавливаем стиль карты: ${MapboxConfig.STREETS_STYLE_URI}");
+        
+        // Ждем загрузки стиля с таймаутом
+        int attempts = 0;
+        bool styleLoaded = false;
+        while (!styleLoaded && attempts < 5) {
+          try {
+            styleLoaded = await mapboxMap.style.isStyleLoaded();
+            if (styleLoaded) break;
+          } catch (e) {
+            print("⚠️ Ошибка проверки загрузки стиля: $e");
+          }
+          attempts++;
+          await Future.delayed(Duration(milliseconds: 200));
+        }
+        
+        // Регистрируем изображения маркеров после загрузки стиля
+        await MapboxConfig.registerMapboxMarkerImages(mapboxMap);
+      } catch (e) {
+        print("⚠️ Ошибка установки стиля карты: $e");
+      }
+      
+      // Создаем менеджер аннотаций для маркеров с повторными попытками
+      int annotationAttempts = 0;
+      const maxAnnotationAttempts = 3;
+      
+      while (annotationAttempts < maxAnnotationAttempts) {
+        try {
+          print("📍 Инициализация менеджера маркеров (попытка ${annotationAttempts + 1})");
+          _pointAnnotationManager = await mapboxMap.annotations.createPointAnnotationManager();
+          
+          if (_pointAnnotationManager != null) {
+            print("✅ Менеджер маркеров успешно создан");
+            break;
+          }
+        } catch (e) {
+          print("⚠️ Ошибка создания менеджера маркеров (попытка ${annotationAttempts + 1}): $e");
+        }
+        
+        annotationAttempts++;
+        if (annotationAttempts < maxAnnotationAttempts) {
+          await Future.delayed(Duration(milliseconds: 500));
+        }
+      }
+      
+      // Обновляем состояние UI в главном потоке
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = null;
+        });
+      }
+      
+      // Если есть текущая позиция, перемещаем камеру к ней
+      if (_currentLocation != null) {
+        try {
+          await mapboxMap.setCamera(
+            CameraOptions(
+              center: Point(
+                coordinates: Position(
+                  _currentLocation!.longitude,
+                  _currentLocation!.latitude
+                )
+              ),
+              zoom: 12.0,
+            ),
+          );
+          print("✅ Камера перемещена к текущей позиции");
+        } catch (e) {
+          print("⚠️ Ошибка перемещения камеры: $e");
+        }
+      }
+      
+      print("✅ Карта полностью инициализирована");
+    } catch (e) {
+      print("❌ Критическая ошибка при инициализации карты: $e");
+      if (mounted) {
+        setState(() {
+          _error = "Ошибка инициализации карты. Попробуйте еще раз.";
+          _isLoading = false;
+        });
       }
     }
   }
   
-  /// Handles map click with a Point object
-  void _onMapClickPoint(Point point) {
-    if (!mounted) return;
+  /// Handle map tap events to place markers
+  void _onMapClick(MapContentGestureContext mapContext) {
+    print("📌 Map tap received at ${DateTime.now()}");
     
+    if (!mounted) {
+      print("❌ Widget not mounted, ignoring tap");
+      return;
+    }
+
     try {
-      // Handle both APIs - check which property exists
-      double lat, lng;
+      print("🔍 MapContext details: point=${mapContext.point}");
       
-      if (point.coordinates is Position) {
-        // For Position type
-        lat = point.coordinates.lat.toDouble();
-        lng = point.coordinates.lng.toDouble();
-      } else if (point.coordinates is List) {
-        // For List type coordinates
-        final coords = point.coordinates;
-        if (coords.length >= 2) {
-          lng = coords[0]?.toDouble() ?? 0.0;
-          lat = coords[1]?.toDouble() ?? 0.0;
-        } else {
-          print('Invalid coordinates format: $coords');
-          return;
+      // Check if tap point exists
+      if (mapContext.point == null) {
+        print("❌ Could not determine tap coordinates - mapContext.point is null");
+        
+        // Показываем визуальный индикатор проблемы
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Не удалось определить координаты нажатия"),
+              backgroundColor: Colors.orange,
+            ),
+          );
         }
-      } else {
-        print('Unknown coordinates format: ${point.coordinates}');
         return;
       }
       
-      print("Map clicked at: $lat, $lng");
+      // Get coordinates from gesture context
+      final coordinates = mapContext.point.coordinates;
       
-      setState(() {
-        _selectedLocation = GeoLocation(latitude: lat, longitude: lng);
-        _locationName = "Selected Location";
-      });
-      
-      // Add a marker at the selected point
-      _addMarkerAtPosition(lat: lat, lng: lng);
-    } catch (e) {
-      print("Error handling map click: $e");
-      if (mounted) {
-        _showErrorSnackbar("Error selecting location: $e");
+      if (coordinates == null || coordinates.isEmpty) {
+        print("❌ Null or empty coordinates in tap event");
+        
+        // Показываем визуальный индикатор проблемы
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Координаты нажатия отсутствуют"),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
       }
+      
+      print("📊 Raw coordinates: $coordinates (type: ${coordinates.runtimeType})");
+      
+      // Default values
+      double lat = MapboxConfig.DEFAULT_LATITUDE;
+      double lng = MapboxConfig.DEFAULT_LONGITUDE;
+      
+      // Упрощенная и более надежная обработка координат
+      if (coordinates is List && coordinates.length >= 2) {
+        // Mapbox обычно дает координаты в формате [lng, lat]
+        final first = coordinates[0];
+        final second = coordinates[1];
+        
+        if (first != null && second != null) {
+          lng = first is double ? first : (first as num).toDouble();
+          lat = second is double ? second : (second as num).toDouble();
+          print("✅ Extracted coordinates from list: lng=$lng, lat=$lat");
+        }
+      } else if (coordinates is Position) {
+        // Position из Mapbox SDK
+        lng = coordinates.lng.toDouble(); // Преобразуем num в double
+        lat = coordinates.lat.toDouble(); // Преобразуем num в double
+        print("✅ Extracted coordinates from Position: lng=$lng, lat=$lat");
+      } else {
+        print("❌ Unsupported coordinate format: ${coordinates.runtimeType}");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Неподдерживаемый формат координат"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      // Basic coordinate validation
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        print("❌ Invalid coordinates: lat=$lat, lng=$lng");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Некорректные координаты"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      // Update state with the selected location
+      print("✅ Setting selected location to: lat=$lat, lng=$lng");
+      if (mounted) {
+        setState(() {
+          _selectedLocation = GeoLocation(latitude: lat, longitude: lng);
+          
+          // Используем простое имя локации пока не получим более точное через геокодинг
+          _locationName = "Выбранная точка";
+        });
+        
+        // Отображаем маркер ТОЧНО в месте тапа
+        _addMarkerAtPosition(lat: lat, lng: lng, isCurrentLocation: false);
+        
+        // Запускаем геокодинг асинхронно - уже после размещения маркера
+        _reverseGeocode(lat, lng).then((name) {
+          if (mounted && name != null && name.isNotEmpty) {
+            setState(() {
+              _locationName = name;
+              print("✅ Location name updated: $_locationName");
+            });
+          }
+        });
+      }
+    } catch (e) {
+      print("❌ Error processing map tap: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Ошибка при обработке нажатия"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Attempt to get location name from coordinates using reverse geocoding
+  Future<String?> _reverseGeocode(double lat, double lng) async {
+    try {
+      print("🔍 Attempting reverse geocoding for: $lat, $lng");
+      final response = await http.get(
+        Uri.parse(
+          "https://api.mapbox.com/geocoding/v5/mapbox.places/$lng,$lat.json?access_token=${MapboxConfig.ACCESS_TOKEN}&language=en"
+        )
+      );
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final features = data['features'] as List<dynamic>;
+        
+        if (features.isNotEmpty) {
+          // Get the first feature's place_name as the location name
+          final name = features[0]['place_name'];
+          print("✅ Reverse geocoding successful: $name");
+          return name;
+        }
+      }
+      
+      print("⚠️ Reverse geocoding returned no results");
+      return null;
+    } catch (e) {
+      print("❌ Error during reverse geocoding: $e");
+      return null;
     }
   }
 
@@ -205,61 +646,81 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     }
   }
 
-  // Добавляет маркер с обработкой ошибок
-  Future<bool> _addMarkerAtPosition({required double lat, required double lng}) async {
-    if (_mapboxMap == null) return false;
+  /// Добавляет маркер на карту по заданным координатам
+  Future<void> _addMarkerAtPosition({
+    required double lat, 
+    required double lng,
+    bool isCurrentLocation = false
+  }) async {
+    if (!mounted) {
+      print("⚠️ Widget не прикреплен к дереву, отмена добавления маркера");
+      return;
+    }
     
-    try {
-      // Если менеджер аннотаций не создан или недоступен, пробуем создать
-      if (_pointAnnotationManager == null) {
-        try {
-          _pointAnnotationManager = await _mapboxMap!.annotations.createPointAnnotationManager();
-          print("Created annotation manager with ID: ${_pointAnnotationManager?.id}");
-        } catch (e) {
-          print("Error creating annotation manager: $e");
-          return false;
+    if (_mapboxMap == null) {
+      print("⚠️ Карта не инициализирована, отмена добавления маркера");
+      return;
+    }
+    
+    // Если менеджер аннотаций не существует или был уничтожен, пытаемся его пересоздать
+    if (_pointAnnotationManager == null) {
+      try {
+        print("🔄 Пересоздание менеджера маркеров");
+        _pointAnnotationManager = await _mapboxMap!.annotations.createPointAnnotationManager();
+        if (_pointAnnotationManager == null) {
+          print("❌ Не удалось создать менеджер маркеров");
+          return;
         }
+      } catch (e) {
+        print("❌ Критическая ошибка при создании менеджера маркеров: $e");
+        return;
       }
-      
-      // Очищаем существующие маркеры перед добавлением нового
+    }
+
+    try {
+      // Очищаем существующие маркеры безопасно
       if (_pointAnnotationManager != null) {
+        print("🧹 Удаление существующих маркеров");
         try {
-          await MapHelper.clearMarkers(_pointAnnotationManager);
+          await _pointAnnotationManager!.deleteAll();
         } catch (e) {
-          print("Error clearing markers (non-critical): $e");
-          // Пробуем создать новый менеджер
+          print("⚠️ Ошибка удаления существующих маркеров: $e");
+          // Пробуем пересоздать менеджер
           try {
             _pointAnnotationManager = await _mapboxMap!.annotations.createPointAnnotationManager();
-          } catch (managerError) {
-            print("Error recreating manager: $managerError");
+            if (_pointAnnotationManager == null) {
+              print("❌ Не удалось пересоздать менеджер маркеров");
+              return;
+            }
+          } catch (secondError) {
+            print("❌ Не удалось пересоздать менеджер маркеров: $secondError");
+            return;
           }
         }
       }
       
-      // Добавляем маркер
-      if (_pointAnnotationManager != null) {
-        try {
-          final options = PointAnnotationOptions(
-            geometry: Point(
-              coordinates: Position(lng, lat),
-            ),
-            iconSize: 1.0,
-            textSize: 12.0,
-            iconImage: "marker",
-          );
-          
-          await _pointAnnotationManager!.create(options);
-          return true;
-        } catch (e) {
-          print("Error adding marker: $e");
-          return false;
-        }
-      }
+      // Выводим точные координаты для отладки
+      print("📍 Добавление маркера по координатам: lat=$lat, lng=$lng");
       
-      return false;
+      // Создаем маркер с минимальными настройками
+      final markerOptions = PointAnnotationOptions(
+        geometry: Point(
+          coordinates: Position(lng, lat)
+        ),
+        iconImage: isCurrentLocation ? "current-location-marker" : "custom-marker",
+        iconSize: 0.1
+      );
+      
+      // Добавляем маркер на карту
+      final marker = await _pointAnnotationManager!.create(markerOptions);
+      
+      if (marker != null) {
+        print("✅ Маркер успешно создан по координатам: lat=$lat, lng=$lng");
+      } else {
+        print("❌ Не удалось создать маркер");
+      }
     } catch (e) {
-      print("General error adding marker: $e");
-      return false;
+      print("❌ Ошибка при добавлении маркера: $e");
     }
   }
 
@@ -270,66 +731,30 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     );
   }
 
-  // Проверка, работаем ли мы на эмуляторе
-  Future<bool> _isEmulator() async {
-    // Простая эвристика для эмулятора - считаем, что мы на эмуляторе, чтобы избежать проблем с рендерингом
-    return true; // Всегда возвращаем true, чтобы избежать проблем с рендерингом на эмуляторе
-  }
-
-  // Fallback виджет для эмуляторов
-  Widget _buildEmulatorFallback() {
-    return Container(
-      color: Colors.grey[200],
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.map, size: 64, color: Colors.grey[600]),
-            SizedBox(height: 16),
-            Text(
-              'Map rendering issue',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18),
-            ),
-            SizedBox(height: 24),
-            ElevatedButton.icon(
-              icon: Icon(Icons.place),
-              label: Text('Select demo location'),
-              onPressed: _selectDemoLocation,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: _isEmulator(),
-      builder: (context, snapshot) {
-        final bool isEmulator = snapshot.data ?? false;
-        
-        return Scaffold(
-          appBar: AppBar(
-            title: Text('Select location'),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Select Location'),
+      ),
+      body: Column(
+        children: [
+          // Search field
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: SearchBar(
+              controller: _searchController,
+              hintText: 'Find a place',
+              leading: const Icon(Icons.search),
+              onChanged: _onSearchTextChanged,
+              onSubmitted: _onSearchSubmitted,
+            ),
           ),
-          body: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: SearchBar(
-                  controller: _searchController,
-                  hintText: 'Search location',
-                  leading: Icon(Icons.search),
-                  onChanged: _onSearchTextChanged,
-                  onSubmitted: _onSearchSubmitted,
-                ),
-              ),
-              // Отображение результатов поиска
-              if (_isSearching && _searchResults.isNotEmpty)
-                Expanded(
-                  child: ListView.builder(
+          
+          // Display search results or map
+          Expanded(
+            child: _isSearching && _searchResults.isNotEmpty
+                ? ListView.builder(
                     itemCount: _searchResults.length,
                     itemBuilder: (context, index) {
                       final result = _searchResults[index];
@@ -339,112 +764,179 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
                         onTap: () => _onSearchResultSelected(result),
                       );
                     },
-                  ),
-                )
-              else
-                Expanded(
-                  child: isEmulator
-                      ? _buildEmulatorFallback() // Всегда показываем fallback на эмуляторе
-                      : Stack(
-                          children: [
-                            RepaintBoundary(
-                              key: UniqueKey(), // Уникальный ключ предотвращает проблемы с кешированием
-                              child: _buildMapWidget(),
-                            ),
-                            // Индикатор загрузки
-                            if (_isMapLoading) 
-                              Center(
-                                child: CircularProgressIndicator(),
+                  )
+                : Stack(
+                    children: [
+                      // Map in RepaintBoundary for rendering optimization
+                      RepaintBoundary(
+                        child: _buildMapWidget(),
+                      ),
+                      
+                      // Show selected location information
+                      if (_selectedLocation != null)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 16,
+                          child: Center(
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(horizontal: 16),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.surface.withOpacity(0.9),
+                                borderRadius: BorderRadius.circular(8),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.1),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
                               ),
-                          ],
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.place, color: Colors.red),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _locationName,
+                                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                        ),
+                                        Text(
+                                          'Lat: ${_selectedLocation!.latitude.toStringAsFixed(5)}, Lng: ${_selectedLocation!.longitude.toStringAsFixed(5)}',
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
-                ),
-            ],
+                    ],
+                  ),
           ),
-          bottomNavigationBar: BottomAppBar(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: ElevatedButton(
-                onPressed: _selectedLocation != null
-                    ? _navigateToDescriptionScreen
-                    : null,
-                child: Text('Continue'),
-              ),
-            ),
+        ],
+      ),
+      bottomNavigationBar: BottomAppBar(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: ElevatedButton(
+            onPressed: _selectedLocation != null
+                ? _navigateToDescriptionScreen
+                : null,
+            child: const Text('Continue'),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
-  /// Инициализация карты и связанных компонентов
+  /// Initialization of map and related components
   Future<void> _initializeMap() async {
-    if (!mounted || _mapboxMap == null) return;
+    if (!mounted) return;
     
+    print("🔄 Reinitializing map");
+    
+    // Update state
     setState(() {
-      _isMapLoading = true;
+      _isLoading = true;
+      _error = null;
     });
     
     try {
-      // Инициализируем компоненты карты с улучшенной обработкой ошибок
-      final success = await MapHelper.initializeMapComponents(_mapboxMap!);
+      // Cancel existing timer
+      _mapLoadingTimer?.cancel();
       
-      if (!success) {
-        if (mounted) {
-          _showErrorSnackbar("Failed to initialize map components");
+      // Set a new timer to track loading
+      _mapLoadingTimer = Timer(const Duration(seconds: 15), () {
+        if (mounted && _isLoading) {
+          print("⏱️ Map loading timeout exceeded");
+          setState(() {
+            _error = "Map loading timed out. Please try again.";
+            _isLoading = false;
+          });
         }
+      });
+      
+      // Get current location
+      await _getCurrentLocation();
+      
+      // If map is not initialized - wait for _onMapCreated to be called
+      if (_mapboxMap == null) {
+        print("⏳ Map not initialized, waiting for creation");
+        // Don't update _isLoading since it's already set to true
         return;
       }
       
-      print("Initializing map components");
-      
-      // Создаем менеджер аннотаций только после успешной инициализации компонентов
+      // If map is initialized - update style
+      print("🎨 Updating map style");
       try {
-        _pointAnnotationManager = await _mapboxMap!.annotations.createPointAnnotationManager();
-        print("Created point annotation manager with ID: ${_pointAnnotationManager?.id}");
+        await _mapboxMap!.style.setStyleURI(MapboxConfig.STREETS_STYLE_URI);
       } catch (e) {
-        print("Error creating annotation manager: $e");
-        if (mounted) {
-          _showErrorSnackbar("Failed to create marker system");
+        print("⚠️ Error updating map style: $e");
+        // Continue even if there's an error
+      }
+      
+      // Check and recreate annotation manager if needed
+      if (_pointAnnotationManager == null && _mapboxMap != null) {
+        try {
+          print("🔄 Recreating annotation manager");
+          _pointAnnotationManager = await _mapboxMap!.annotations.createPointAnnotationManager();
+        } catch (e) {
+          print("⚠️ Error creating annotation manager: $e");
         }
       }
       
-      // Если местоположение выбрано, добавляем маркер
-      if (_selectedLocation != null) {
-        // Используем MapHelper для безопасного добавления маркера
+      // If there's a selected location - add marker
+      if (_selectedLocation != null && _pointAnnotationManager != null) {
         await _addMarkerAtPosition(
           lat: _selectedLocation!.latitude, 
           lng: _selectedLocation!.longitude
         );
+      } 
+      // If no selected location but current location exists - show it
+      else if (_currentLocation != null && _mapboxMap != null) {
+        try {
+          print("🎥 Moving camera to current location");
+          await _mapboxMap!.setCamera(
+            CameraOptions(
+              center: Point(
+                coordinates: Position(
+                  _currentLocation!.longitude,
+                  _currentLocation!.latitude
+                )
+              ),
+              zoom: 12.0,
+            ),
+          );
+        } catch (e) {
+          print("⚠️ Error moving camera: $e");
+        }
       }
-    } catch (e) {
-      print("Error initializing map: $e");
-      if (mounted) {
-        _showErrorSnackbar("Map initialization error: $e");
-      }
-    } finally {
+      
       if (mounted) {
         setState(() {
-          _isMapLoading = false;
+          _isLoading = false;
+        });
+      }
+      
+      print("✅ Map successfully reinitialized");
+    } catch (e) {
+      print("❌ Error reinitializing map: $e");
+      
+      if (mounted) {
+        setState(() {
+          _error = "Error reloading map: $e";
+          _isLoading = false;
         });
       }
     }
-  }
-
-  // Добавление маркера на карту (обертка для совместимости)
-  Future<bool> _addMarker(double latitude, double longitude, String name) async {
-    if (_mapboxMap == null || !mounted) {
-      print("Cannot add marker - map not initialized");
-      return false;
-    }
-    
-    // Показать название места
-    setState(() {
-      _locationName = name;
-    });
-    
-    // Добавить маркер
-    return await _addMarkerAtPosition(lat: latitude, lng: longitude);
   }
 
   // Показать диалог поиска с улучшенным интерфейсом
@@ -680,26 +1172,7 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     _moveCameraToLocation(point);
     
     // Добавляем маркер на карту
-    _addMarker(location.latitude, location.longitude, name);
-  }
-  
-  // Получаем имя локации на основе координат
-  String getLocationName(double latitude, double longitude) {
-    // Определим примерные названия для известных координат
-    if (latitude == 55.751244 && longitude == 37.618423) {
-      return 'Москва';
-    } else if (latitude == 59.938806 && longitude == 30.314278) {
-      return 'Санкт-Петербург';
-    } else if (latitude == 56.838924 && longitude == 60.605701) {
-      return 'Екатеринбург';
-    } else if (latitude == 43.134019 && longitude == 131.928379) {
-      return 'Владивосток';
-    } else if (latitude == 45.035158 && longitude == 38.975795) {
-      return 'Краснодар';
-    }
-    
-    // Возвращаем строку с координатами, если нет известного названия
-    return 'Location (${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)})';
+    _addMarkerAtPosition(lat: location.latitude, lng: location.longitude, isCurrentLocation: false);
   }
 
   Widget _buildSearchBar() {
@@ -753,11 +1226,11 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _locationName!,
+                  _locationName,
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  'Шир: ${_selectedLocation!.latitude.toStringAsFixed(6)}, Дол: ${_selectedLocation!.longitude.toStringAsFixed(6)}',
+                  'Lat: ${_selectedLocation!.latitude.toStringAsFixed(6)}, Lng: ${_selectedLocation!.longitude.toStringAsFixed(6)}',
                   style: const TextStyle(fontSize: 12),
                 ),
               ],
@@ -815,102 +1288,152 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
         builder: (context) => UploadDescriptionScreen(
           images: widget.images,
           selectedLocation: _selectedLocation!,
-          locationName: _locationName ?? 'Selected location',
+          locationName: _locationName,
         ),
       ),
     );
   }
 
-  /// Builds the map widget with correct parameters for API 2.6.2
+  /// Builds the map widget
   Widget _buildMapWidget() {
-    return FutureBuilder<bool>(
-      future: _isEmulator(),
-      builder: (context, snapshot) {
-        final bool isEmulator = snapshot.data ?? false;
-        
-        if (isEmulator) {
-          // Return a simplified placeholder for the emulator to avoid crashes
-          return Container(
-            color: Colors.grey[200],
-            height: double.infinity,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.map, size: 64, color: Colors.grey[400]),
-                  SizedBox(height: 16),
-                  Text('Map preview not available on emulator',
-                      style: TextStyle(color: Colors.grey[600])),
-                ],
-              ),
-            ),
-          );
-        }
-        
-        try {
-          return SizedBox(
-            height: MediaQuery.of(context).size.height * 0.6,
+    return Container(
+      width: double.infinity,
+      // Адаптивная высота вместо фиксированной
+      height: MediaQuery.of(context).size.height * 0.6,
+      decoration: BoxDecoration(
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(8.0),
+      ),
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8.0),
             child: MapWidget(
-              key: UniqueKey(),
-              styleUri: MapboxConfig.MINIMAL_STYLE_URI,
+              // Используем простой стабильный ключ
+              key: const ValueKey('location_map'),
+              // Используем самый простой стиль для максимальной совместимости
+              styleUri: MapboxConfig.STREETS_STYLE_URI,
+              onMapCreated: _onMapCreated,
+              // Настраиваем обработчик тапов по карте
+              onTapListener: _onMapClick,
               cameraOptions: CameraOptions(
                 center: Point(
                   coordinates: Position(
-                    DEMO_LOCATION_LONGITUDE,
-                    DEMO_LOCATION_LATITUDE
-                  ),
+                    _currentLocation?.longitude ?? MapboxConfig.DEFAULT_LONGITUDE,
+                    _currentLocation?.latitude ?? MapboxConfig.DEFAULT_LATITUDE
+                  )
                 ),
-                zoom: 9.0,
+                zoom: 12.0,
               ),
-              onMapCreated: _onMapCreated,
-              onTapListener: _onMapClick,
             ),
-          );
-        } catch (e) {
-          print('Error creating map: $e');
-          return Center(
-            child: Text('Error loading map: $e'),
-          );
-        }
-      }
+          ),
+          if (_isLoading || _mapboxMap == null)
+            const Center(
+              child: CircularProgressIndicator(),
+            ),
+          if (_error != null)
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red, size: 48),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Ошибка загрузки карты: $_error',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: _initializeMap,
+                    child: const Text('Повторить'),
+                  ),
+                ],
+              ),
+            ),
+          // Добавляем пульсирующую точку, если есть текущее местоположение
+          if (_currentLocation != null && _mapboxMap != null && !_isLoading)
+            _buildPulsingUserLocationMarker(),
+        ],
+      ),
     );
   }
 
-  // Выбор демо-локации для тестирования
-  void _selectDemoLocation() {
-    setState(() {
-      // Использование демо-координат (например, Москва)
-      _selectedLocation = GeoLocation(
-        latitude: 55.751244,
-        longitude: 37.618423,
-      );
-      
-      // Обновляем название локации
-      _locationName = 'Moscow (demo)';
-      
-      // Показываем сообщение о выборе локации
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Selected demo location')),
-      );
-    });
-    
-    // Переходим к следующему шагу
-    _navigateToDescriptionScreen();
+  /// Создает пульсирующий маркер для отображения текущего местоположения пользователя
+  Widget _buildPulsingUserLocationMarker() {
+    return StreamBuilder<ScreenCoordinate?>(
+      stream: Stream.periodic(const Duration(milliseconds: 100))
+        .asyncMap((_) => _getScreenCoordinatesForLocation(_currentLocation!)),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const SizedBox.shrink(); // Если координаты еще не готовы, ничего не отображаем
+        }
+        
+        final screenCoordinate = snapshot.data!;
+        
+        return Positioned(
+          left: screenCoordinate.x.toDouble() - 15,
+          top: screenCoordinate.y.toDouble() - 15,
+          child: AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Внешний пульсирующий круг
+                  Container(
+                    width: 30 + (10 * _pulseAnimation.value),
+                    height: 30 + (10 * _pulseAnimation.value),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue.withOpacity(0.3 * (1 - _pulseAnimation.value)),
+                    ),
+                  ),
+                  // Средний круг
+                  Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue.withOpacity(0.5),
+                    ),
+                  ),
+                  // Внутренний круг
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
   }
-
-  // Обработчик загрузки стиля карты
-  void _onStyleLoaded() {
-    print("Map style loaded successfully");
+  
+  /// Преобразует геокоординаты в координаты экрана
+  Future<ScreenCoordinate?> _getScreenCoordinatesForLocation(GeoLocation location) async {
+    if (_mapboxMap == null) return null;
     
-    if (!mounted) return;
-    
-    setState(() {
-      _isMapInitialized = true;
-      _isStyleLoaded = true;
-    });
-    
-    // Отменяем таймер загрузки карты
-    _mapLoadingTimer?.cancel();
+    try {
+      final coordinate = await _mapboxMap!.pixelForCoordinate(
+        Point(
+          coordinates: Position(
+            location.longitude,
+            location.latitude,
+          ),
+        ),
+      );
+      return coordinate;
+    } catch (e) {
+      print('Error converting geo coordinates to screen coordinates: $e');
+      return null;
+    }
   }
 
   // Методы обработки поиска
@@ -962,7 +1485,7 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
     
     // Update map
     if (_selectedLocation != null && _mapboxMap != null) {
-      _addMarker(_selectedLocation!.latitude, _selectedLocation!.longitude, _locationName ?? '');
+      _addMarkerAtPosition(lat: _selectedLocation!.latitude, lng: _selectedLocation!.longitude, isCurrentLocation: false);
       MapHelper.moveCamera(
         mapboxMap: _mapboxMap!,
         latitude: _selectedLocation!.latitude,
@@ -970,6 +1493,54 @@ class _UploadLocationScreenState extends State<UploadLocationScreen> with Widget
         zoom: 14.0,
       );
     }
+  }
+
+  // Helper method to show location service disabled dialog
+  void _showLocationServiceDisabledDialog() {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Location Services Disabled'),
+        content: Text('Please enable location services in your device settings to use your current location.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Helper method to show permission denied dialog
+  void _showPermissionDeniedDialog({required bool isPermanent}) {
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Location Permission Required'),
+        content: Text(isPermanent 
+          ? 'Location permission is permanently denied. Please enable it in app settings.'
+          : 'Location permission is required to use your current location.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('OK'),
+          ),
+          if (isPermanent)
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                geo.Geolocator.openAppSettings();
+              },
+              child: Text('Open Settings'),
+            ),
+        ],
+      ),
+    );
   }
 }
 

@@ -16,8 +16,18 @@ void main() {
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  // Инициализируем Mapbox с помощью нового API
-  MapboxOptions.setAccessToken(MapboxConfig.ACCESS_TOKEN);
+  
+  // Инициализируем Mapbox с токеном доступа
+  final String mapboxAccessToken = MapboxConfig.ACCESS_TOKEN;
+  print('Инициализация Mapbox с токеном: ${mapboxAccessToken.substring(0, 10)}...');
+  
+  try {
+    MapboxOptions.setAccessToken(mapboxAccessToken);
+    print('Mapbox токен установлен успешно');
+  } catch (e) {
+    print('Ошибка при установке токена Mapbox: $e');
+  }
+  
   runApp(const MyApp());
 }
 

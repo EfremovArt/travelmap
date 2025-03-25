@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../../models/location.dart';
 import '../../models/post.dart';
 import '../../services/post_service.dart';
+import '../../services/user_service.dart';
 
 class UploadDescriptionScreen extends StatefulWidget {
   final List<File> images;
@@ -40,12 +41,18 @@ class _UploadDescriptionScreenState extends State<UploadDescriptionScreen> {
     });
     
     try {
-      // Проверяем, что у нас есть все необходимые данные
+      // Check that we have all required data
       if (widget.images.isEmpty) {
-        throw Exception('Не выбрано ни одного изображения');
+        throw Exception('No images selected');
       }
       
-      // Создаем новый пост
+      // Получаем email пользователя для идентификации
+      final userEmail = await UserService.getEmail();
+      final userId = userEmail.isNotEmpty ? userEmail : 'current_user';
+      
+      print('📝 Creating new post with user ID: $userId');
+      
+      // Create new post
       final post = Post(
         id: const Uuid().v4(),
         images: widget.images,
@@ -53,31 +60,33 @@ class _UploadDescriptionScreenState extends State<UploadDescriptionScreen> {
         locationName: widget.locationName,
         description: _descriptionController.text.trim(),
         createdAt: DateTime.now(),
-        user: 'current_user', // В будущем - ID текущего пользователя
+        user: userId, // Использование email пользователя вместо статического значения
       );
       
-      // Сохраняем пост
+      // Save post
       await PostService.savePost(post);
       
       if (!mounted) return;
       
-      // Показываем сообщение об успехе
+      // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Post published successfully!'))
       );
       
-      // Получаем результат для возврата (локация)
+      // Get result for return (location)
       final result = widget.selectedLocation;
       
-      // Закрываем все экраны загрузки и возвращаемся
-      Navigator.of(context).pop(result); // Возвращаемся на экран с локацией
-      Navigator.of(context).pop(result); // Возвращаемся на экран с изображением
-      Navigator.of(context).pop(result); // Возвращаемся на главный экран
+      print('Publication completed, returning location: ${result.latitude}, ${result.longitude}');
+      
+      // Close all upload screens and return
+      Navigator.of(context).pop(result); // Return to location screen
+      Navigator.of(context).pop(result); // Return to image screen
+      Navigator.of(context).pop(result); // Return to main screen with location data
       
     } catch (e) {
       print('Failed to publish post: $e');
       
-      // Обрабатываем ошибки
+      // Handle errors
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to publish post: $e'))
