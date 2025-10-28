@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import '../config/mapbox_config.dart';
 import '../models/location.dart';
-
+import '../utils/logger.dart';
 /// Результат создания менеджера аннотаций
 class AnnotationManagerResult {
   final PointAnnotationManager? manager;
@@ -37,7 +37,7 @@ class MapHelper {
     }
   ) async {
     try {
-      print("Initializing map components");
+      AppLogger.log("Initializing map components");
       
       // Более надежное ожидание инициализации стиля
       bool styleLoaded = false;
@@ -48,11 +48,11 @@ class MapHelper {
         try {
           styleLoaded = await mapboxMap.style.isStyleLoaded();
           if (styleLoaded) {
-            print("Стиль карты загружен успешно");
+            AppLogger.log("Стиль карты загружен успешно");
             break;
           }
         } catch (e) {
-          print("Error checking if style is loaded (attempt ${styleRetryCount + 1}): $e");
+          AppLogger.log("Error checking if style is loaded (attempt ${styleRetryCount + 1}): $e");
         }
         
         // Увеличиваем задержку с каждой попыткой
@@ -63,7 +63,7 @@ class MapHelper {
       // Даже если не смогли проверить стиль, продолжаем работу
       // с паузой для загрузки ресурсов карты
       if (!styleLoaded) {
-        print("Не удалось подтвердить загрузку стиля, даем карте дополнительное время");
+        AppLogger.log("Не удалось подтвердить загрузку стиля, даем карте дополнительное время");
         await Future.delayed(Duration(milliseconds: 2000)); 
       }
       
@@ -87,7 +87,7 @@ class MapHelper {
           }
         } catch (e) {
           lastException = e is Exception ? e : Exception(e.toString());
-          print("Attempt $retryCount to create annotation manager failed: $e");
+          AppLogger.log("Attempt $retryCount to create annotation manager failed: $e");
         }
         
         retryCount++;
@@ -96,7 +96,7 @@ class MapHelper {
       }
       
       if (pointAnnotationManager != null) {
-        print("Point annotation manager created successfully");
+        AppLogger.log("Point annotation manager created successfully");
         if (onPointManagerCreated != null) {
           onPointManagerCreated(pointAnnotationManager);
         }
@@ -106,14 +106,14 @@ class MapHelper {
             ? "Failed to create annotation manager: ${lastException}"
             : "Failed to create annotation manager after $maxRetries attempts";
             
-        print(errorMessage);
+        AppLogger.log(errorMessage);
         if (onError != null) {
           onError(errorMessage);
         }
         return false;
       }
     } catch (e) {
-      print("Error initializing map components: $e");
+      AppLogger.log("Error initializing map components: $e");
       if (onError != null) {
         onError(e);
       }
@@ -129,7 +129,7 @@ class MapHelper {
       try {
         styleLoaded = await mapboxMap.style.isStyleLoaded();
       } catch (e) {
-        print("Style check failed before creating annotation manager: $e");
+        AppLogger.log("Style check failed before creating annotation manager: $e");
         // Продолжаем, даже если проверка не удалась
       }
       
@@ -144,14 +144,13 @@ class MapHelper {
         final manager = await annotationsPlugin.createPointAnnotationManager();
         return manager;
       } catch (apiError) {
-        print("API error creating annotation manager: $apiError");
+        AppLogger.log("API error creating annotation manager: $apiError");
         
         // Пробуем еще раз с дополнительной задержкой
         await Future.delayed(Duration(milliseconds: 800));
         return await mapboxMap.annotations.createPointAnnotationManager();
       }
     } catch (e) {
-      print("Error creating annotation manager: $e");
       return null;
     }
   }
@@ -199,14 +198,14 @@ class MapHelper {
         await mapboxMap.setCamera(cameraOptions);
       }
     } catch (e) {
-      print("Ошибка при перемещении камеры: $e");
+      AppLogger.log("Ошибка при перемещении камеры: $e");
     }
   }
 
   /// Безопасно очищает все маркеры с карты
   static Future<bool> clearMarkers(PointAnnotationManager? manager) async {
     if (manager == null) {
-      print("Cannot clear markers: manager is null");
+      AppLogger.log("Cannot clear markers: manager is null");
       return false;
     }
 
@@ -216,49 +215,40 @@ class MapHelper {
       // считаем менеджер валидным
       try {
         final id = manager.id;
-        print("Attempting to clear markers for manager with id: $id");
+        AppLogger.log("Attempting to clear markers for manager with id: $id");
       } catch (e) {
-        print("Manager appears to be invalid: $e");
+        AppLogger.log("Manager appears to be invalid: $e");
         return false;
       }
       
       try {
         // Пробуем удалить все маркеры
         await manager.deleteAll();
-        print("Successfully cleared all markers");
+        AppLogger.log("Successfully cleared all markers");
         return true;
       } catch (e) {
         if (e.toString().contains("No manager found with id")) {
           // Наиболее частая ошибка - менеджер был уничтожен
-          print("Manager was already destroyed: $e");
+          AppLogger.log("Manager was already destroyed: $e");
           return false;
         } else {
           // Другие ошибки
-          print("Error during marker deletion: $e");
+          AppLogger.log("Error during marker deletion: $e");
           return false;
         }
       }
     } catch (e) {
-      print("General error clearing markers: $e");
+      AppLogger.log("General error clearing markers: $e");
       return false;
     }
   }
 
   /// Безопасно создает менеджер аннотаций для точек с повторными попытками и кэшированием
   static Future<PointAnnotationManager?> createAnnotationManager(MapboxMap map) async {
-    // Если у нас уже есть кэшированный менеджер, проверяем его валидность перед возвратом
-    if (_cachedManager != null) {
-      try {
-        // Проверяем, что менеджер валиден путем доступа к его ID
-        final id = _cachedManager!.id;
-        print("Using cached annotation manager with id: $id");
-        return _cachedManager;
-      } catch (e) {
-        print("Cached annotation manager is invalid: $e");
-        _cachedManager = null;
-      }
-    }
-    
+    // ВАЖНО: Всегда создаем новый менеджер для каждого экрана карты.
+    // Это предотвращает использование уничтоженного менеджера после ухода со страницы,
+    // что ранее приводило к крэшу: "No manager found with id: X".
+
     int retryCount = 0;
     final maxRetries = 3;
     
@@ -269,23 +259,23 @@ class MapHelper {
         try {
           styleLoaded = await map.style.isStyleLoaded();
         } catch (e) {
-          print("Error checking if style is loaded (attempt ${retryCount + 1}): $e");
+          AppLogger.log("Error checking if style is loaded (attempt ${retryCount + 1}): $e");
           styleLoaded = false;
         }
 
         if (!styleLoaded) {
           // Если стиль не загружен, ждем и пробуем снова
-          print("Style not loaded, waiting (attempt ${retryCount + 1})");
+          AppLogger.log("Style not loaded, waiting (attempt ${retryCount + 1})");
           await Future.delayed(Duration(milliseconds: 1000));
           retryCount++;
           continue;
         }
 
         // Пытаемся создать менеджер аннотаций
-        print("Creating new annotation manager...");
+        AppLogger.log("Creating new annotation manager...");
         final annotationApi = map.annotations;
         if (annotationApi == null) {
-          print("Annotation API is null, retrying...");
+          AppLogger.log("Annotation API is null, retrying...");
           await Future.delayed(Duration(milliseconds: 1000));
           retryCount++;
           continue;
@@ -293,25 +283,25 @@ class MapHelper {
         
         final manager = await annotationApi.createPointAnnotationManager();
         
-        // Проверяем, что менеджер валиден и кэшируем его для последующего использования
+        // Проверяем, что менеджер валиден и (опционально) кэшируем его для последующего использования внутри этого жизненного цикла
         if (manager != null) {
           try {
             // Проверяем, что менеджер работоспособен, доступаясь к его ID
             final id = manager.id;
-            print("Annotation manager created successfully with id: $id");
+            AppLogger.log("Annotation manager created successfully with id: $id");
             
-            // Кэшируем менеджер для повторного использования
-            _cachedManager = manager;
+            // Не сохраняем менеджер между экранами, чтобы избежать использования уничтоженного экземпляра.
+            _cachedManager = null;
             
             return manager;
           } catch (e) {
-            print("Manager was created but appears to be invalid: $e");
+            AppLogger.log("Manager was created but appears to be invalid: $e");
           }
         } else {
-          print("Manager creation returned null");
+          AppLogger.log("Manager creation returned null");
         }
       } catch (e) {
-        print("Error creating annotation manager (attempt ${retryCount + 1}): $e");
+        AppLogger.log("Error creating annotation manager (attempt ${retryCount + 1}): $e");
       }
 
       // Ждем перед следующей попыткой
@@ -319,7 +309,7 @@ class MapHelper {
       retryCount++;
     }
 
-    print("Failed to create annotation manager after $maxRetries attempts");
+    AppLogger.log("Failed to create annotation manager after $maxRetries attempts");
     return null;
   }
 
@@ -332,9 +322,9 @@ class MapHelper {
       // Проверяем, что менеджер действительно существует
       try {
         final id = manager.id;
-        print("Adding click listener to manager with ID: $id");
+        AppLogger.log("Adding click listener to manager with ID: $id");
       } catch (e) {
-        print("Cannot add click listener to invalid manager: $e");
+        AppLogger.log("Cannot add click listener to invalid manager: $e");
         return false;
       }
       
@@ -342,11 +332,11 @@ class MapHelper {
       manager.addOnPointAnnotationClickListener(MyPointAnnotationClickListener(
         (PointAnnotation annotation) {
           try {
-            print("Marker clicked: ${annotation.id}");
+            AppLogger.log("Marker clicked: ${annotation.id}");
             onAnnotationClick(annotation.id);
             return true;
           } catch (e) {
-            print("Error in marker click handler: $e");
+            AppLogger.log("Error in marker click handler: $e");
             return false;
           }
         }
@@ -354,7 +344,7 @@ class MapHelper {
       
       return true;
     } catch (e) {
-      print("Error adding click listener: $e");
+      AppLogger.log("Error adding click listener: $e");
       return false;
     }
   }
@@ -364,7 +354,7 @@ class MapHelper {
     try {
       return await map.style.isStyleLoaded();
     } catch (e) {
-      print("Error checking if style is loaded: $e");
+      AppLogger.log("Error checking if style is loaded: $e");
       return false;
     }
   }

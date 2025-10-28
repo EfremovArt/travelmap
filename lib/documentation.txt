@@ -1,3 +1,221 @@
+The Mapbox Maps SDK for Android gives you complete control over the position of the map camera. The camera's location and behavior is defined by its properties:
+
+center: The longitude and latitude at which the camera is pointed.
+bearing: The visual rotation of the map. The bearing value is the compass direction the camera points to show the user which way is "up". For example, a bearing of 90° orients the map so that east is up.
+pitch: The visual tilt of the map. A pitch of 0° is perpendicular to the surface, looking straight down at the map, while a greater value like 60° looks ahead towards the horizon.
+zoom: The zoom level specifies how close the camera is to the features being viewed. At zoom level 0, the viewport shows continents and oceans. A middle value of 11 shows city-level details, and at a higher zoom level the map begins to show buildings and points of interest.
+padding: Insets from each edge of the map. The padding value impacts the location at which the center point is rendered.
+anchor: The point in the map's coordinate system around which zoom and bearing are applied. Mutually exclusive with center.
+Set camera position
+
+The Maps SDK allows you to set the camera's position on map initialization, or after the map has already been initialized. You can also set the camera's position based on the user's location or fit the camera to a specific shape.
+
+Set camera on map initialization
+
+You can configure many of your map's characteristics, including the starting camera position or the location of the compass on the screen, in your activity's layout file.
+
+<com.mapbox.maps.MapView
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools"
+  xmlns:mapbox="http://schemas.android.com/apk/res-auto"
+  android:id="@+id/mapView"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  mapbox:mapbox_cameraTargetLat="40.7128"
+  mapbox:mapbox_cameraTargetLng="-74.0060"
+  mapbox:mapbox_cameraZoom="9.0"
+/>
+When you add a map to your application programmatically instead of using XML, specify the camera position when you initialize the map by defining CameraOptions, passing those options to MapInitOptions, and using those options when initializing the MapView. This approach is best if you know what part of the world you want to show a user first. Since the SDK will load the tiles around the specified location first, the map may appear to load faster.
+
+CameraOptions parameters are optional. For any parameters that aren't specified, the SDK will use the default value.
+
+// set initial camera position
+val initialCameraOptions = CameraOptions.Builder()
+  .center(Point.fromLngLat(-74.0066, 40.7135))
+  .pitch(45.0)
+  .zoom(15.5)
+  .bearing(-17.6)
+  .build()
+
+val mapInitOptions = MapInitOptions(
+    context = this,
+    mapOptions = mapOptions,
+    plugins = plugins,
+    cameraOptions = initialCameraOptions,
+    textureView = true
+  )
+mapView = MapView(this, mapInitOptions)
+Default camera position
+If you don't specify the camera position when the style is loaded, default values will be used. If the style being loaded has center, bearing, pitch, and zoom properties defined, the position will be determined by those values. If these properties are not defined in the style JSON, the map will be centered on the coordinates 0,0 with a bearing and pitch of 0 at zoom level 0.
+Set after map initialization
+
+In some cases you may want to set the camera's position after the map has been initialized based on an event or user interaction. For example, you may want to center the map camera on an annotation when a user clicks on it.
+
+val pointAnnotationManager = mapView.annotations.createPointAnnotationManager().apply {
+  // listen for click event
+  addClickListener(
+    OnPointAnnotationClickListener {
+      // define camera position
+      val cameraPosition = CameraOptions.Builder()
+        .zoom(14.0)
+        .center(it.point)
+        .build()
+      // set camera position
+      mapView.mapboxMap.setCamera(cameraPosition)
+      true
+    }
+  )
+}
+EXAMPLE
+Change camera position on map click
+After the map has been initialized, use OnMapClickListener to listen for a user action, then change the camera position using flyTo.
+Set camera for Jetpack Compose
+
+With Jetpack Compose extension, you can set the camera with MapViewportState. You can set the initial value with rememberMapViewportState initialization block, and hoist the map viewport state to interact with camera later based on user interactions.
+
+val mapViewportState = rememberMapViewportState {
+  // set initial camera position
+  setCameraOptions {
+    center(Point.fromLngLat(-74.0066, 40.7135))
+    pitch(45.0)
+    zoom(15.5)
+    bearing(-17.6)
+  }
+}
+MapboxMap(
+  modifier = Modifier.fillMaxSize(),
+  mapViewportState = mapViewportState,
+  onMapClickListener = { clickedPoint ->
+    // listen for click event and ease to the clicked point
+    mapViewportState.easeTo(
+      cameraOptions {
+        center(clickedPoint)
+      }
+    )
+    true
+  }
+)
+EXAMPLE
+(Compose) Map viewport animation
+Showcase the camera animations based on MapViewportState API
+Set camera based on device location
+
+You can set the camera based on the location of the device. Users must grant permission before an app can access information about their location. For more information about asking for the user's location, see the User location guide.
+
+After the user has granted this permission, you can pass their location to the app and center the camera on it.
+
+GUIDE
+Use Viewport API to track location
+Learn how to use high level Viewport API to track device location.
+
+Android View
+
+Jetpack Compose
+
+// Get the user's location as coordinates
+private val onIndicatorBearingChangedListener = OnIndicatorBearingChangedListener {
+  mapView.mapboxMap.setCamera(CameraOptions.Builder().bearing(it).build())
+}
+
+private val onIndicatorPositionChangedListener = OnIndicatorPositionChangedListener {
+  mapView.mapboxMap.setCamera(CameraOptions.Builder().center(it).build())
+  mapView.gestures.focalPoint = mapView.mapboxMap.pixelForCoordinate(it)
+}
+...
+
+// Pass the user's location to camera
+mapView.location.addOnIndicatorPositionChangedListener(onIndicatorPositionChangedListener)
+mapView.location.addOnIndicatorBearingChangedListener(onIndicatorBearingChangedListener)
+You can position the camera to fit a specified shape within the viewport. MapboxMap includes a convenience method cameraForCoordinates to generate a CameraOptions based on given coordinates or geometries.
+
+This example uses cameraForCoordinates to set the camera view on the triangle defined in triangleCoordinates:
+
+
+Android View
+
+Jetpack Compose
+// Create a polygon
+val triangleCoordinates = listOf(
+  Point.fromLngLat(-3.363937, -10.733102),
+  Point.fromLngLat(1.754703, -19.716317),
+  Point.fromLngLat(-15.747196, -21.085074),
+  Point.fromLngLat(-3.363937, -10.733102)
+)
+// Convert to a camera options from given coordinates and padding
+mapboxMap.cameraForCoordinates(
+  coordinates = triangleCoordinates,
+  camera = cameraOptions { },
+  coordinatesPadding = EdgeInsets(50.0, 50.0, 50.0, 50.0),
+  maxZoom = null,
+  offset = null
+  ) { cameraPosition ->
+    // Set camera position
+    mapboxMap.setCamera(cameraPosition)
+  }
+EXAMPLE
+Fit the camera to a set of coordinates
+Use cameraForCoordinates to set the camera view to the specified coordinates.
+Listen for camera changes
+
+The Maps SDK provides camera change callbacks that can tell you whether any camera change events have happened. The SDK gives different camera listeners to determine if the camera change event was caused by a user gesture, built-in API animations, or a developer-controlled movement.
+
+
+Android View
+
+Jetpack Compose
+
+val callback = CameraChangedCallback { cameraChanged ->
+  // Do something when the camera position changes
+}
+
+// Subscribe the camera changed event
+val cancelable = mapboxMap.subscribeCameraChanged(callback)
+
+// To cancel the subscription
+cancelable.cancel()
+
+// Note that the subscription will be automatically canceled when the map is destroyed.
+EXAMPLE
+Listen for camera changes to update an inset map
+This example shows an inset map on a larger map and uses OnCameraChangeListener to listen for camera changes on the keep the two map's cameras in sync.
+Get camera position
+
+Once the map has been initialized, you can retrieve the camera's position to understand what the user is viewing, and other camera-related information, using the CameraState property.
+
+For example, you could display the longitude and latitude of the center point of the map as text:
+
+
+Android View
+
+Jetpack Compose
+
+// Get the cameraState.center
+val center = mapView.mapboxMap.cameraState.center
+Restrict camera
+
+Use MapboxMap's setBounds function to restrict a user's panning to limit the map camera to a chosen area.
+
+For example, you could create a location-specific app experience in which a user's panning behavior is limited to a specific country, like Iceland.
+
+
+Android View
+
+Jetpack Compose
+
+// Define camera bounds
+private val cameraBoundsOptions = CameraBoundsOptions.Builder()
+  .bounds(
+    CoordinateBounds(
+      Point.fromLngLat(-122.66336, 37.492987),
+      Point.fromLngLat(-122.250481, 37.87165),
+      false
+    )
+  )
+  .minZoom(10.0)
+  .build()
+// Fit camera to the bounding box
+mapboxMap.setBounds(cameraBoundsOptions)
+
 The PermissionsManager is a set of utilities that help you to check for, request, and respond to any number of Android system permissions such as device location or camera.
 
 PermissionsManager

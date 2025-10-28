@@ -5,22 +5,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-
-// Встроенная реализация GoogleAuthService прямо в файл
-class GoogleAuthService {
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
-
-  Future<void> signOut() async {
-    try {
-      await _googleSignIn.signOut();
-    } catch (e) {
-      print('Ошибка при выходе из аккаунта Google: $e');
-      throw Exception('Не удалось выйти из аккаунта Google: $e');
-    }
-  }
-}
-
+import '../services/auth_service.dart';
+import '../services/profile_service.dart';
+import '../services/social_service.dart';
+import '../utils/logger.dart';
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({Key? key}) : super(key: key);
 
@@ -35,7 +23,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _birthdayController = TextEditingController();
 
-  final GoogleAuthService _googleAuthService = GoogleAuthService();
+  final AuthService _authService = AuthService();
+  final ProfileService _profileService = ProfileService();
+  final SocialService _socialService = SocialService();
 
   File? _profileImage;
   String? _profileImageUrl; // Для изображения из Google-аккаунта
@@ -43,11 +33,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isLoading = false;
   bool _isEditing = false;
   bool _isGoogleAccount = false;
+  
+  // Данные о социальных связях
+  int _followersCount = 0;
+  int _followingCount = 0;
+  int _favoritesCount = 0;
+  bool _loadingSocialData = false;
 
   @override
   void initState() {
     super.initState();
     _loadUserData();
+    _loadSocialData();
   }
 
   @override
@@ -59,40 +56,107 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
-  // Load user data from SharedPreferences
+  // Load user data from SharedPreferences and API
   Future<void> _loadUserData() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      // Проверяем тип аутентификации
-      final accessType = prefs.getString('access_type') ?? '';
-      _isGoogleAccount = accessType == 'google';
-
-      setState(() {
-        _firstNameController.text = prefs.getString('firstName') ?? '';
-        _lastNameController.text = prefs.getString('lastName') ?? '';
-        _emailController.text = prefs.getString('user_email') ?? prefs.getString('email') ?? '';
-
-        // Получаем URL изображения профиля для Google-аккаунта
-        _profileImageUrl = prefs.getString('photoUrl');
-
-        final birthday = prefs.getString('birthday');
-        if (birthday != null && birthday.isNotEmpty) {
-          _selectedDate = DateTime.parse(birthday);
-          _birthdayController.text = DateFormat('MM/dd/yyyy').format(_selectedDate!);
+      // Проверяем данные авторизации через API
+      final authResult = await _authService.checkAuth();
+      
+      AppLogger.log('🔍 Результат проверки авторизации: $authResult');
+      
+      if (authResult['success'] == true && authResult['isAuthenticated'] == true) {
+        final userData = authResult['userData'];
+        
+        setState(() {
+          _firstNameController.text = userData['firstName'] ?? '';
+          _lastNameController.text = userData['lastName'] ?? '';
+          _emailController.text = userData['email'] ?? '';
+          
+          // Process profile image URL - ensure it has base URL if it's a relative path
+          String? profileImageUrl = userData['profileImageUrl'];
+          if (profileImageUrl != null && profileImageUrl.isNotEmpty) {
+            AppLogger.log('🖼️ Загружаем URL изображения профиля: "$profileImageUrl"');
+            
+            if (profileImageUrl.startsWith('/')) {
+              // It's a relative URL, add the base URL
+              profileImageUrl = 'https://bearded-fox.ru${profileImageUrl}';
+              AppLogger.log('📸 Нормализованный URL изображения: $profileImageUrl');
+            } else if (!profileImageUrl.startsWith('http://') && !profileImageUrl.startsWith('https://')) {
+              // Если URL не содержит протокол и не начинается с /, добавляем базовый URL
+              profileImageUrl = 'https://bearded-fox.ru/$profileImageUrl';
+              AppLogger.log('📸 Добавлен базовый URL к изображению: $profileImageUrl');
+            }
+            
+            // Проверяем, что URL действительно имеет смысл
+            if (Uri.tryParse(profileImageUrl)?.hasScheme == true) {
+              _profileImageUrl = profileImageUrl;
+              AppLogger.log('✅ Установлен URL изображения профиля: $_profileImageUrl');
+            } else {
+              AppLogger.log('⚠️ Некорректный URL изображения профиля: $profileImageUrl');
+              _profileImageUrl = null;
+            }
+          } else {
+            AppLogger.log('⚠️ Пустой URL изображения профиля');
+            _profileImageUrl = null;
+          }
+          
+          // Обрабатываем дату рождения, если она есть
+          if (userData['birthday'] != null && userData['birthday'].toString().isNotEmpty) {
+            try {
+              // Преобразуем из формата yyyy-MM-dd в MM/dd/yyyy
+              final dateStr = userData['birthday'].toString();
+              AppLogger.log('📅 Получена дата рождения: $dateStr');
+              
+              if (dateStr.contains('-')) {
+                final parts = dateStr.split('-');
+                if (parts.length == 3) {
+                  // Формат сервера: yyyy-MM-dd -> MM/dd/yyyy
+                  _birthdayController.text = "${parts[1]}/${parts[2]}/${parts[0]}";
+                  _selectedDate = DateTime.parse(dateStr);
+                } else {
+                  _birthdayController.text = dateStr;
+                }
+              } else {
+                _birthdayController.text = dateStr;
+              }
+              
+              AppLogger.log('📅 Дата в контроллере: ${_birthdayController.text}');
+            } catch (dateError) {
+              AppLogger.log('⚠️ Ошибка при форматировании даты рождения: $dateError');
+              _birthdayController.text = userData['birthday'].toString();
+            }
+          } else {
+            AppLogger.log('📅 Дата рождения не указана в данных пользователя');
+            _birthdayController.text = '';
+          }
+          
+          // Определяем тип аутентификации
+          _isGoogleAccount = userData['googleId'] != null;
+        });
+      } else {
+        // Если API вернул ошибку авторизации, перенаправляем на страницу входа
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Session expired. Please log in again.'))
+          );
+          
+          // Немного задержки перед переходом
+          Future.delayed(Duration(seconds: 2), () {
+            Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+          });
         }
-
-        final imagePath = prefs.getString('profileImage');
-        if (imagePath != null && imagePath.isNotEmpty) {
-          _profileImage = File(imagePath);
-        }
-      });
+      }
     } catch (e) {
-      print('Error loading user data: $e');
+      AppLogger.log('❌ Error loading user data: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading data: $e'))
+        );
+      }
     } finally {
       setState(() {
         _isLoading = false;
@@ -100,7 +164,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // Save user data to SharedPreferences
+  // Save user data via API
   Future<void> _saveUserData() async {
     setState(() {
       _isLoading = true;
@@ -108,34 +172,95 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     try {
       if (_formKey.currentState?.validate() ?? false) {
-        final prefs = await SharedPreferences.getInstance();
-
-        await prefs.setString('firstName', _firstNameController.text);
-        await prefs.setString('lastName', _lastNameController.text);
-        await prefs.setString('email', _emailController.text);
-
-        if (_selectedDate != null) {
-          await prefs.setString('birthday', _selectedDate!.toIso8601String());
-        }
-
-        if (_profileImage != null) {
-          await prefs.setString('profileImage', _profileImage!.path);
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Профиль успешно сохранен'))
-          );
+        // Check that the data has changed
+        final String firstName = _firstNameController.text.trim();
+        final String lastName = _lastNameController.text.trim();
+        final String birthday = _birthdayController.text.trim();
+        
+        if (firstName.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('First name cannot be empty'))
+            );
+          }
           setState(() {
-            _isEditing = false;
+            _isLoading = false;
           });
+          return;
+        }
+        
+        // Log values before saving
+        AppLogger.log('📋 Saving profile:');
+        AppLogger.log('👤 First name: $firstName');
+        AppLogger.log('👤 Last name: $lastName');
+        AppLogger.log('📅 Date of birth: $birthday');
+        
+        // Дополнительная проверка формата даты
+        String formattedBirthday = birthday;
+        if (birthday.isNotEmpty) {
+          try {
+            final parts = birthday.split('/');
+            if (parts.length == 3) {
+              AppLogger.log('📅 Валидная дата в формате MM/DD/YYYY: месяц=${parts[0]}, день=${parts[1]}, год=${parts[2]}');
+              
+              // Проверяем, что это действительно дата
+              final month = int.parse(parts[0]);
+              final day = int.parse(parts[1]);
+              final year = int.parse(parts[2]);
+              
+              if (month < 1 || month > 12) {
+                AppLogger.log('⚠️ Некорректный месяц: $month');
+              }
+              
+              if (day < 1 || day > 31) {
+                AppLogger.log('⚠️ Некорректный день: $day');
+              }
+              
+              if (year < 1900 || year > DateTime.now().year) {
+                AppLogger.log('⚠️ Некорректный год: $year');
+              }
+            } else {
+              AppLogger.log('⚠️ Некорректный формат даты: $birthday');
+            }
+          } catch (e) {
+            AppLogger.log('⚠️ Ошибка при проверке даты: $e');
+          }
+        }
+        
+        // Сохраняем данные на сервер
+        final result = await _profileService.updateProfile(
+          firstName: firstName,
+          lastName: lastName,
+          birthday: formattedBirthday,
+        );
+        
+        AppLogger.log('📤 Результат обновления профиля: $result');
+        
+        if (result['success'] == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Profile successfully saved'))
+            );
+            setState(() {
+              _isEditing = false;
+            });
+            
+            // Перезагружаем данные профиля
+            await _loadUserData();
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(result['error'] ?? 'Error saving profile'))
+            );
+          }
         }
       }
     } catch (e) {
-      print('Error saving user data: $e');
+      AppLogger.log('❌ Error saving user data: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Ошибка при сохранении профиля'))
+          SnackBar(content: Text('Error saving profile: $e'))
         );
       }
     } finally {
@@ -149,16 +274,152 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _pickImage(ImageSource source) async {
     try {
       final picker = ImagePicker();
-      final pickedImage = await picker.pickImage(source: source);
+      final pickedImage = await picker.pickImage(
+        source: source,
+        imageQuality: 85, // Уменьшаем качество для быстрой загрузки
+        maxWidth: 800,   // Ограничиваем размер
+      );
 
       if (pickedImage != null) {
+        AppLogger.log('📸 Выбрано изображение: ${pickedImage.path}');
+        final fileExtension = pickedImage.path.split('.').last.toLowerCase();
+        
+        // Проверяем, поддерживается ли формат изображения
+        if (fileExtension != 'jpg' && fileExtension != 'jpeg' && fileExtension != 'png' && fileExtension != 'gif') {
+          AppLogger.log('⚠️ Неподдерживаемый формат изображения: $fileExtension. Поддерживаются только JPG, PNG и GIF');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Выберите изображение в формате JPG, PNG или GIF'))
+            );
+          }
+          return;
+        }
+        
         setState(() {
           _profileImage = File(pickedImage.path);
           _profileImageUrl = null; // Сбрасываем URL, если выбрано локальное изображение
         });
+        
+        // Сразу загружаем изображение на сервер
+        _uploadProfileImage(_profileImage!);
+      } else {
+        AppLogger.log('⚠️ Выбор изображения был отменен пользователем');
       }
     } catch (e) {
-      print('Error picking image: $e');
+      AppLogger.log('❌ Ошибка при выборе изображения: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось выбрать изображение: $e'))
+        );
+      }
+    }
+  }
+  
+  // Загрузка фото профиля на сервер
+  Future<void> _uploadProfileImage(File imageFile) async {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      AppLogger.log('📤 Начинаем загрузку изображения: ${imageFile.path}');
+      AppLogger.log('📁 Размер файла: ${(await imageFile.length() / 1024).toStringAsFixed(2)} KB');
+      
+      // Проверяем наличие файла
+      if (!await imageFile.exists()) {
+        AppLogger.log('❌ Файл не существует: ${imageFile.path}');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Файл изображения не существует'))
+          );
+        }
+        setState(() {
+          _isLoading = false;
+          _profileImage = null;
+        });
+        return;
+      }
+      
+      // Проверяем тип файла
+      final fileExtension = imageFile.path.split('.').last.toLowerCase();
+      if (fileExtension != 'jpg' && fileExtension != 'jpeg' && fileExtension != 'png' && fileExtension != 'gif') {
+        AppLogger.log('⚠️ Неподдерживаемый формат изображения: $fileExtension');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Неподдерживаемый формат изображения. Используйте JPG, PNG или GIF'))
+          );
+        }
+        setState(() {
+          _isLoading = false;
+          _profileImage = null;
+        });
+        return;
+      }
+      
+      // Загружаем изображение на сервер
+      final result = await _profileService.uploadProfileImage(imageFile);
+      
+      AppLogger.log('📤 Результат загрузки изображения: $result');
+      
+      if (result['success'] == true) {
+        // Обновляем URL изображения
+        final String? newImageUrl = result['profileImageUrl'] ?? result['imageUrl'] ?? result['absoluteUrl'];
+        
+        setState(() {
+          if (newImageUrl != null && newImageUrl.isNotEmpty) {
+            _profileImageUrl = newImageUrl;
+            AppLogger.log('✅ Установлен новый URL изображения: $_profileImageUrl');
+          } else {
+            AppLogger.log('⚠️ Сервер не вернул URL изображения');
+            
+            // Если сервер не вернул URL, но загрузка успешна, попробуем использовать возвращенное имя файла
+            if (result['fileName'] != null && result['fileName'].isNotEmpty) {
+              _profileImageUrl = 'https://bearded-fox.ru/travel/uploads/profile_images/${result['fileName']}';
+              AppLogger.log('✅ Сформирован URL изображения из имени файла: $_profileImageUrl');
+            }
+          }
+          _profileImage = null; // Сбрасываем локальный файл, так как загрузка прошла успешно
+        });
+        
+        // Перезагружаем данные пользователя
+        await _loadUserData();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Изображение профиля обновлено'))
+          );
+        }
+      } else {
+        String errorMessage = result['error'] ?? result['message'] ?? 'Ошибка при загрузке изображения';
+        AppLogger.log('❌ Ошибка при загрузке: $errorMessage');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(errorMessage))
+          );
+        }
+        
+        // Сбрасываем локальный файл, так как загрузка не удалась
+        setState(() {
+          _profileImage = null;
+        });
+      }
+    } catch (e) {
+      AppLogger.log('❌ Ошибка при загрузке изображения: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading profile image: $e'))
+        );
+      }
+      
+      // Сбрасываем локальный файл, так как произошла ошибка
+      setState(() {
+        _profileImage = null;
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -168,7 +429,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
-          'Выберите источник изображения',
+          'Choose Image Source',
           style: GoogleFonts.poppins(
             fontSize: 18,
             fontWeight: FontWeight.w600,
@@ -180,7 +441,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ListTile(
               leading: const Icon(Icons.photo_library),
               title: Text(
-                'Галерея',
+                'Gallery',
                 style: GoogleFonts.poppins(),
               ),
               onTap: () {
@@ -191,7 +452,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ListTile(
               leading: const Icon(Icons.camera_alt),
               title: Text(
-                'Камера',
+                'Camera',
                 style: GoogleFonts.poppins(),
               ),
               onTap: () {
@@ -207,30 +468,58 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // Select birthday date
   Future<void> _selectDate() async {
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate ?? DateTime.now(),
-      firstDate: DateTime(1900),
-      lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Colors.blue.shade700,
-              onPrimary: Colors.white,
-              onSurface: Colors.black,
+    AppLogger.log('📅 Открываем выбор даты рождения');
+    
+    try {
+      // По умолчанию 18 лет назад, или текущая выбранная дата
+      final DateTime initialDate = _selectedDate ?? DateTime.now().subtract(const Duration(days: 365 * 18));
+      
+      AppLogger.log('📅 Начальная дата: $initialDate');
+      
+      final DateTime? picked = await showDatePicker(
+        context: context,
+        initialDate: initialDate,
+        firstDate: DateTime(1900),
+        lastDate: DateTime.now(),
+        builder: (context, child) {
+          return Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: ColorScheme.light(
+                primary: Colors.blue.shade700,
+                onPrimary: Colors.white,
+                onSurface: Colors.black,
+              ),
             ),
-          ),
-          child: child!,
+            child: child!,
+          );
+        },
+      );
+  
+      if (picked != null) {
+        AppLogger.log('📅 Выбрана дата: $picked');
+        
+        // Форматируем дату в строку в формате MM/dd/yyyy для отображения
+        final String formattedDate = DateFormat('MM/dd/yyyy').format(picked);
+        AppLogger.log('📅 Отформатированная дата: $formattedDate');
+        
+        setState(() {
+          _selectedDate = picked;
+          if (_birthdayController != null) {
+            _birthdayController.text = formattedDate;
+          }
+        });
+        
+        AppLogger.log('📅 Дата в контроллере: ${_birthdayController.text}');
+      } else {
+        AppLogger.log('📅 Выбор даты отменен');
+      }
+    } catch (e) {
+      AppLogger.log('❌ Ошибка при выборе даты: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting date: $e'))
         );
-      },
-    );
-
-    if (picked != null && picked != _selectedDate) {
-      setState(() {
-        _selectedDate = picked;
-        _birthdayController.text = DateFormat('MM/dd/yyyy').format(picked);
-      });
+      }
     }
   }
 
@@ -240,105 +529,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(
-          'Выйти из аккаунта?',
+          'Sign Out?',
           style: GoogleFonts.poppins(
             fontSize: 18,
             fontWeight: FontWeight.w600,
           ),
         ),
         content: Text(
-          'Вы уверены, что хотите выйти из своего аккаунта?',
+          'Are you sure you want to sign out of your account?',
           style: GoogleFonts.poppins(),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.of(context).pop(false),
             child: Text(
-              'Отмена',
+              'Cancel',
               style: GoogleFonts.poppins(),
             ),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue.shade700,
-            ),
-            child: Text(
-              'Выйти',
-              style: GoogleFonts.poppins(
-                color: Colors.white,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      try {
-        setState(() {
-          _isLoading = true;
-        });
-
-        // Если это Google-аккаунт, выходим через сервис
-        if (_isGoogleAccount) {
-          await _googleAuthService.signOut();
-        }
-
-        // Очищаем данные пользователя
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.clear();
-
-        if (mounted) {
-          // Перенаправляем на экран входа - используем простой подход
-          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
-        }
-      } catch (e) {
-        print('Ошибка при выходе из аккаунта: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Ошибка при выходе из аккаунта'))
-          );
-        }
-      } finally {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  // Delete account
-  Future<void> _deleteAccount() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Удалить аккаунт?',
-          style: GoogleFonts.poppins(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        content: Text(
-          'Вы уверены, что хотите удалить свой аккаунт? Это действие нельзя отменить.',
-          style: GoogleFonts.poppins(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(
-              'Отмена',
-              style: GoogleFonts.poppins(),
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.of(context).pop(true),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
             ),
             child: Text(
-              'Удалить',
+              'Sign Out',
               style: GoogleFonts.poppins(
                 color: Colors.white,
               ),
@@ -346,41 +561,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ],
       ),
-    );
+    ) ?? false;
 
-    if (confirmed == true) {
+    if (confirmed) {
+      setState(() {
+        _isLoading = true;
+      });
+
       try {
-        setState(() {
-          _isLoading = true;
-        });
-
-        // Если это Google-аккаунт, выходим через сервис
-        if (_isGoogleAccount) {
-          await _googleAuthService.signOut();
-        }
-
+        // Сначала очищаем SharedPreferences
         final prefs = await SharedPreferences.getInstance();
-        await prefs.clear(); // Удаляем все данные пользователя
-
+        await prefs.clear();
+        
+        try {
+          // Выходим из аккаунта через API в отдельном try-catch блоке
+          // чтобы предотвратить крах, если API не ответит
+          await _authService.signOut();
+        } catch (apiError) {
+          AppLogger.log('API error during sign out: $apiError');
+          // Игнорируем ошибку API, продолжаем локальный выход
+        }
+        
+        // Переходим на экран входа
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Аккаунт успешно удален'))
-          );
-
-          // Перенаправляем на экран входа - используем простой подход
-          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+          await Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
         }
       } catch (e) {
-        print('Ошибка при удалении аккаунта: $e');
+        AppLogger.log('Error signing out: $e');
+        // В случае общей ошибки, показываем сообщение пользователю
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Ошибка при удалении аккаунта'))
+            SnackBar(content: Text('Error while signing out: $e'))
           );
+          
+          // И все равно пытаемся перейти на экран входа
+          await Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
         }
       } finally {
-        setState(() {
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
       }
     }
   }
@@ -392,6 +614,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
     });
   }
 
+  // Загрузка социальных данных пользователя
+  Future<void> _loadSocialData() async {
+    if (mounted) {
+      setState(() {
+        _loadingSocialData = true;
+      });
+    }
+    
+    try {
+      // Загружаем данные о подписчиках
+      final followersResult = await _socialService.getFollows(
+        type: 'followers',
+      );
+      
+      if (followersResult['success'] == true && followersResult['follows'] != null) {
+        setState(() {
+          _followersCount = followersResult['totalCount'] ?? 0;
+        });
+      }
+      
+      // Загружаем данные о подписках
+      final followingResult = await _socialService.getFollows(
+        type: 'following',
+      );
+      
+      if (followingResult['success'] == true && followingResult['follows'] != null) {
+        setState(() {
+          _followingCount = followingResult['totalCount'] ?? 0;
+        });
+      }
+      
+      // Загружаем данные об избранных фотографиях
+      final favoritesResult = await _socialService.getFavorites();
+      
+      if (favoritesResult['success'] == true && favoritesResult['favorites'] != null) {
+        setState(() {
+          _favoritesCount = favoritesResult['totalCount'] ?? 0;
+        });
+      }
+    } catch (e) {
+      AppLogger.log('Ошибка загрузки социальных данных: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingSocialData = false;
+        });
+      }
+    }
+  }
+
+  // Переход к списку подписчиков
+  void _showFollowers() {
+    AppLogger.log('Показать подписчиков');
+    // Здесь будет переход к экрану подписчиков
+    // Navigator.push(context, MaterialPageRoute(builder: (context) => FollowersScreen()));
+  }
+  
+  // Переход к списку подписок
+  void _showFollowing() {
+    AppLogger.log('Показать подписки');
+    // Здесь будет переход к экрану подписок
+    // Navigator.push(context, MaterialPageRoute(builder: (context) => FollowingScreen()));
+  }
+  
+  // Переход к избранным фотографиям
+  void _showFavorites() {
+    AppLogger.log('Показать избранное');
+    // Здесь будет переход к экрану избранных фотографий
+    // Navigator.push(context, MaterialPageRoute(builder: (context) => FavoritesScreen()));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -399,7 +692,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         backgroundColor: Colors.blue.shade700,
         elevation: 0,
         title: Text(
-          'Профиль',
+          'Profile',
           style: GoogleFonts.poppins(
             fontWeight: FontWeight.w600,
             color: Colors.white,
@@ -460,7 +753,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ),
                       label: Text(
-                        'Выйти из аккаунта',
+                        'Sign Out',
                         style: GoogleFonts.poppins(
                           color: Colors.white,
                           fontWeight: FontWeight.w500,
@@ -479,7 +772,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           color: Colors.red,
                         ),
                         label: Text(
-                          'Удалить аккаунт',
+                          'Delete Account',
                           style: GoogleFonts.poppins(
                             color: Colors.red,
                             fontWeight: FontWeight.w500,
@@ -522,19 +815,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       width: 4.0,
                     ),
                   ),
-                  child: _profileImageUrl != null && _profileImage == null
+                  child: _profileImageUrl != null && _profileImage == null && _profileImageUrl!.isNotEmpty
                       ? ClipOval(
                     child: CachedNetworkImage(
                       imageUrl: _profileImageUrl!,
                       width: 160,
                       height: 160,
                       fit: BoxFit.cover,
-                      placeholder: (context, url) => CircularProgressIndicator(),
-                      errorWidget: (context, url, error) => Icon(
-                        Icons.person,
-                        size: 80,
-                        color: Colors.grey,
-                      ),
+                      placeholder: (context, url) => const CircularProgressIndicator(),
+                      errorWidget: (context, url, error) {
+                        AppLogger.log('⚠️ Ошибка загрузки изображения: $url - $error');
+                        // Если возникла ошибка при загрузке изображения, очищаем URL
+                        if (mounted) {
+                          Future.microtask(() {
+                            setState(() {
+                              _profileImageUrl = null;
+                            });
+                          });
+                        }
+                        return const Icon(
+                          Icons.person,
+                          size: 80,
+                          color: Colors.grey,
+                        );
+                      },
                     ),
                   )
                       : _profileImage != null
@@ -590,7 +894,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              _isEditing ? "Изменить профиль" : "Профиль",
+              _isEditing ? "Edit Profile" : "Profile",
               style: GoogleFonts.poppins(
                 color: Colors.white,
                 fontSize: 24,
@@ -615,43 +919,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
       fontWeight: FontWeight.w500,
     );
 
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Личная информация',
-              style: GoogleFonts.poppins(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.blue.shade700,
-              ),
-            ),
-            const SizedBox(height: 16),
-            _buildInfoItem('Имя', _firstNameController.text),
-            const Divider(),
-            _buildInfoItem('Фамилия', _lastNameController.text),
-            const Divider(),
-            _buildInfoItem('Email', _emailController.text),
-            const Divider(),
-            _buildInfoItem('Дата рождения', _birthdayController.text),
+    return Column(
+      children: [
+        // Отступ вместо карточки социальной статистики
+        SizedBox(height: 16),
+        
+        // Личная информация
+        Card(
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Personal Information',
+                  style: GoogleFonts.poppins(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue.shade700,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildInfoItem('First Name', _firstNameController.text),
+                const Divider(),
+                _buildInfoItem('Last Name', _lastNameController.text),
+                const Divider(),
+                _buildInfoItem('Email', _emailController.text),
+                const Divider(),
+                _buildInfoItem('Date of Birth', _birthdayController.text),
 
-            if (_isGoogleAccount) ...[
-              const Divider(),
-              _buildInfoItem('Аккаунт', 'Google'),
-            ],
-          ],
+                if (_isGoogleAccount) ...[
+                  const Divider(),
+                  _buildInfoItem('Account', 'Google'),
+                ],
+              ],
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
-
+  
   // Build single info item for view mode
   Widget _buildInfoItem(String label, String value) {
     return Padding(
@@ -667,7 +979,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           const Spacer(),
           Text(
-            value.isNotEmpty ? value : 'Не указано',
+            value.isNotEmpty ? value : 'Not specified',
             style: GoogleFonts.poppins(
               fontSize: 16,
               fontWeight: FontWeight.w500,
@@ -691,7 +1003,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Редактировать профиль',
+              'Edit Profile',
               style: GoogleFonts.poppins(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
@@ -702,7 +1014,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             TextFormField(
               controller: _firstNameController,
               decoration: InputDecoration(
-                hintText: 'Имя',
+                hintText: 'First Name',
                 filled: true,
                 fillColor: Colors.grey.shade100,
                 border: OutlineInputBorder(
@@ -716,17 +1028,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               validator: (value) {
                 if (value == null || value.isEmpty) {
-                  return 'Пожалуйста, введите ваше имя';
+                  return 'Please enter your first name';
                 }
                 return null;
               },
             ),
-            const SizedBox(height: 16),
-
+            const SizedBox(height: 12),
             TextFormField(
               controller: _lastNameController,
               decoration: InputDecoration(
-                hintText: 'Фамилия',
+                hintText: 'Last Name',
                 filled: true,
                 fillColor: Colors.grey.shade100,
                 border: OutlineInputBorder(
@@ -738,68 +1049,111 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   vertical: 16,
                 ),
               ),
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Пожалуйста, введите вашу фамилию';
-                }
-                return null;
-              },
             ),
-            const SizedBox(height: 16),
-
-            TextFormField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: InputDecoration(
-                hintText: 'Email',
-                filled: true,
-                fillColor: Colors.grey.shade100,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 16,
-                ),
-              ),
-              validator: (value) {
-                if (value == null || value.isEmpty) {
-                  return 'Пожалуйста, введите ваш email';
-                }
-
-                final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-                if (!emailRegex.hasMatch(value)) {
-                  return 'Пожалуйста, введите корректный email';
-                }
-
-                return null;
-              },
-            ),
-            const SizedBox(height: 16),
-
-            TextFormField(
-              controller: _birthdayController,
-              readOnly: true,
+            const SizedBox(height: 12),
+            // Поле даты рождения
+            GestureDetector(
               onTap: _selectDate,
-              decoration: InputDecoration(
-                hintText: 'Дата рождения',
-                filled: true,
-                fillColor: Colors.grey.shade100,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+              child: AbsorbPointer(
+                child: TextFormField(
+                  controller: _birthdayController,
+                  decoration: InputDecoration(
+                    hintText: 'Date of Birth',
+                    filled: true,
+                    fillColor: Colors.grey.shade100,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                    suffixIcon: const Icon(Icons.calendar_month),
+                  ),
                 ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 16,
-                ),
-                suffixIcon: const Icon(Icons.calendar_month),
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  // Delete account
+  Future<void> _deleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          'Delete Account?',
+          style: GoogleFonts.poppins(
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        content: Text(
+          'Are you sure you want to delete your account? This action cannot be undone.',
+          style: GoogleFonts.poppins(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(
+              'Cancel',
+              style: GoogleFonts.poppins(),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+            ),
+            child: Text(
+              'Delete',
+              style: GoogleFonts.poppins(
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        setState(() {
+          _isLoading = true;
+        });
+
+        // Если это Google-аккаунт, выходим через сервис
+        if (_isGoogleAccount) {
+          await _authService.signOut();
+        }
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.clear(); // Удаляем все данные пользователя
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Account successfully deleted'))
+          );
+
+          // Перенаправляем на экран входа - используем простой подход
+          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+        }
+      } catch (e) {
+        AppLogger.log('Ошибка при удалении аккаунта: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Error deleting account'))
+          );
+        }
+      } finally {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 }

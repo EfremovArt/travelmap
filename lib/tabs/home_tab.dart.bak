@@ -1,0 +1,4303 @@
+import 'dart:async';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import '../utils/map_helper.dart';
+import '../config/mapbox_config.dart';
+import '../config/api_config.dart';
+import '../models/post.dart';
+import '../services/post_service.dart';
+import '../services/user_service.dart';
+import '../services/social_service.dart';
+import '../services/location_service.dart';
+import '../config/mapbox_config.dart';
+import 'package:geolocator/geolocator.dart' as geo;
+import '../screens/upload/upload_image_screen.dart';
+import '../models/location.dart';
+import '../utils/permissions_manager.dart';
+import 'package:intl/intl.dart';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'dart:io';
+import 'dart:typed_data';
+import '../widgets/post_card.dart';
+import '../screens/edit/edit_post_screen.dart';
+import '../screens/image_viewer/image_viewer_screen.dart';
+import '../screens/comments_screen.dart';
+import '../screens/image_viewer/network_image_viewer_screen.dart';
+import '../widgets/location_posts_viewer.dart';
+import 'dart:math';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/map_filter_service.dart';
+import '../utils/logger.dart';
+import 'package:flutter/services.dart';
+/// Tab with map and post feed
+class HomeTab extends StatefulWidget {
+  final List<Post>? posts;
+  final Function(Post)? onPostSelected;
+  final GlobalKey<_HomeTabState>? homeStateKey;
+
+  const HomeTab({
+    super.key,
+    this.posts,
+    this.onPostSelected,
+    this.homeStateKey,
+  });
+
+  @override
+  _HomeTabState createState() => _HomeTabState();
+}
+
+// Создаем публичный тип HomeTabState для доступа к нему извне
+typedef HomeTabState = _HomeTabState;
+
+class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  final UserService _userService = UserService();
+  final GlobalKey<RefreshIndicatorState> _refreshIndicatorKey = GlobalKey<RefreshIndicatorState>();
+  final ScrollController _feedScrollController = ScrollController();
+  final TextEditingController _commentController = TextEditingController();
+
+  // Map and marker states
+  MapboxMap? _mapboxMap;
+  bool _isMapLoaded = false;
+  bool _isMapLoading = false;
+  bool _markersLoading = false;
+  String _error = '';
+  GeoLocation? _currentPosition;
+  StreamSubscription? _locationSubscription;
+  String _activeView = 'map';
+  Post? _selectedPost;
+  // Main map data
+  Map<String, Post> _markerPostMap = {};
+  PointAnnotationManager? _pointAnnotationManager;
+  // Local list of posts for updating
+  List<Post> _posts = [];
+  // Timer for periodic post updates
+  Timer? _postsRefreshTimer;
+
+  // Cache for user data
+  String? _userProfileImage;
+  String _userFullName = 'User';
+  String _userEmail = ''; // Add field for user email
+  String _userId = ''; // Добавляем ID пользователя
+  bool _userDataLoaded = false;
+
+  // Animation for pulsating point
+  late AnimationController _pulseAnimationController;
+  late Animation<double> _pulseAnimation;
+
+  // Variable to store last viewed post
+  Post? _lastViewedPost;
+  int _lastViewedPostIndex = -1;
+
+  // Listener for marker clicks to avoid recreating it every time
+  late final MyPointAnnotationClickListener _markerClickListener = MyPointAnnotationClickListener((annotation) {
+    final post = _markerPostMap[annotation.id];
+    if (post != null) {
+      AppLogger.log("Click on marker with ID: ${annotation.id}, post: ${post.id}");
+
+      // Устанавливаем выбранный пост и обновляем lastViewedPost
+      setState(() {
+        _selectedPost = post;
+        _lastViewedPost = post;
+      });
+
+      // Вместо показа всплывающего окна, переключаемся на ленту и скроллим к нужному посту
+      setState(() {
+        _activeView = 'feed';
+      });
+
+      // Находим пост в ленте и прокручиваем к нему
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToPostInFeed(post);
+      });
+    } else {
+      AppLogger.log("No post found for marker with ID: ${annotation.id}");
+    }
+    return true; // Возвращаем true, чтобы указать, что событие было обработано
+  });
+
+  // Добавляем переменную для хранения текущих настроек камеры
+  CameraOptions? _lastCameraOptions;
+
+  // Map filter service
+  final MapFilterService _mapFilterService = MapFilterService();
+  bool _showOnlyFavorites = false;
+  StreamSubscription? _mapFilterSubscription;
+  
+  // Таймер для мониторинга состояния камеры
+  Timer? _cameraMonitorTimer;
+
+  // Добавляем флаг для отслеживания специального отображения маркеров
+  bool _showingSpecificPost = false;
+  bool _isProcessingAnnotations = false; // <<< Add lock flag here
+
+  // Переменные для хранения отложенных действий
+  GeoLocation? _pendingLocation;
+  String? _pendingLocationName;
+  Post? _pendingPost;
+  bool _hasPendingAction = false;
+  
+  // Метод для установки отложенного действия с локацией
+  void setPendingLocationToShow(GeoLocation location, String locationName) {
+    _pendingLocation = location;
+    _pendingLocationName = locationName;
+    _pendingPost = null;
+    _hasPendingAction = true;
+    AppLogger.log('🔥 Установлена локация для отображения: $locationName (${location.latitude}, ${location.longitude})');
+  }
+  
+  // Метод для установки отложенного действия с постом
+  void setPendingPostToShow(Post post) {
+    _pendingPost = post;
+    _pendingLocation = null;
+    _pendingLocationName = null;
+    _hasPendingAction = true;
+    AppLogger.log('🔥 Установлен пост для отображения: ${post.id} в локации ${post.locationName}');
+  }
+  
+  // Выполнить отложенные действия если они есть
+  void _processPendingActions() {
+    if (!_hasPendingAction) {
+      AppLogger.log('📌 Нет отложенных действий для выполнения');
+      return;
+    }
+    
+    AppLogger.log('🔄 Выполнение отложенных действий...');
+    
+    if (_pendingLocation != null && _pendingLocationName != null) {
+      AppLogger.log('🗺️ Показываем локацию: $_pendingLocationName (${_pendingLocation!.latitude}, ${_pendingLocation!.longitude})');
+      
+      if (_mapboxMap != null && _isMapLoaded) {
+        // Убедимся, что мы находимся в режиме карты
+        setState(() {
+          _activeView = 'map';
+          AppLogger.log('✅ Активный режим изменен на "map"');
+        });
+        
+        // Отложенное выполнение для гарантии обновления UI
+        Future.delayed(Duration(milliseconds: 300), () async {
+          if (!mounted || _mapboxMap == null) return;
+          
+          // Сначала очищаем все существующие поисковые маркеры
+          try {
+            await _clearSearchMarkers();
+            AppLogger.log('✅ Очищены предыдущие поисковые маркеры');
+          } catch (e) {
+            AppLogger.log('⚠️ Ошибка при очистке поисковых маркеров: $e');
+          }
+          
+          // Перемещаем камеру к локации с анимацией
+          try {
+            await _flyToLocation(_pendingLocation!);
+            AppLogger.log('✅ Камера перемещена к локации');
+          } catch (e) {
+            AppLogger.log('⚠️ Ошибка при перемещении камеры: $e');
+            // Пробуем обычное перемещение камеры
+            await _moveCamera(_pendingLocation!);
+          }
+          
+          // Добавляем маркер
+          try {
+            await _addCustomMarker(_pendingLocation!, _pendingLocationName!);
+            AppLogger.log('✅ Добавлен маркер для локации');
+          } catch (e) {
+            AppLogger.log('⚠️ Ошибка при добавлении маркера: $e');
+          }
+        });
+      } else {
+        AppLogger.log('⚠️ Карта не инициализирована, нельзя показать локацию');
+      }
+    } else if (_pendingPost != null) {
+      AppLogger.log('📝 Показываем пост: ${_pendingPost!.id} в локации ${_pendingPost!.locationName}');
+      
+      // Проверяем, есть ли пост в списке постов
+      int postIndex = _posts.indexWhere((p) => p.id == _pendingPost!.id);
+      if (postIndex == -1) {
+        AppLogger.log('⚠️ Пост не найден в текущем списке постов. Обновляем список...');
+        
+        // Обновляем список постов
+        _loadAllPosts().then((_) {
+          // Проверяем еще раз после обновления
+          postIndex = _posts.indexWhere((p) => p.id == _pendingPost!.id);
+          if (postIndex == -1) {
+            AppLogger.log('❌ Пост всё еще не найден после обновления списка');
+            return;
+          }
+          
+          _processSelectedPost(postIndex);
+        });
+      } else {
+        _processSelectedPost(postIndex);
+      }
+    }
+    
+    // Сбрасываем флаги отложенных действий
+    _pendingLocation = null;
+    _pendingLocationName = null;
+    _pendingPost = null;
+    _hasPendingAction = false;
+  }
+  
+  // Вспомогательный метод для обработки выбранного поста
+  void _processSelectedPost(int postIndex) {
+    AppLogger.log('📊 Обработка выбранного поста, индекс: $postIndex');
+    
+    // Устанавливаем выбранный пост
+    Post post = _posts[postIndex];
+    setState(() {
+      _selectedPost = post;
+      _lastViewedPost = post;
+      _lastViewedPostIndex = postIndex;
+      _activeView = 'feed';
+      AppLogger.log('✅ Активный режим изменен на "feed", lastViewedPostIndex = $postIndex');
+    });
+    
+    // Отложенное выполнение для гарантии обновления UI
+    Future.delayed(Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      
+      // Прокручиваем к посту
+      _scrollToPostById(post.id);
+    });
+  }
+  
+  // Метод для очистки поисковых маркеров
+  Future<void> _clearSearchMarkers() async {
+    if (_mapboxMap == null || !_isMapLoaded || _pointAnnotationManager == null) return;
+    
+    try {
+      AppLogger.log('🔄 Очистка поисковых маркеров');
+      
+      // Получаем список поисковых маркеров
+      List<String> searchMarkerIds = _markerPostMap.entries
+          .where((entry) => entry.value.id.startsWith('search_'))
+          .map((entry) => entry.key)
+          .toList();
+      
+      // Удаляем маркеры
+      if (searchMarkerIds.isNotEmpty) {
+        AppLogger.log('✅ Найдено ${searchMarkerIds.length} поисковых маркеров для удаления');
+        
+        // Пытаемся удалить маркеры через создание нового менеджера аннотаций
+        try {
+          // Создаем новый менеджер аннотаций, это автоматически очистит все предыдущие маркеры
+          final annotations = await _mapboxMap!.annotations;
+          _pointAnnotationManager = await annotations.createPointAnnotationManager();
+          
+          // Добавляем обработчик нажатия на новый менеджер
+          _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
+          
+          // Удаляем поисковые маркеры из кэша
+          for (String markerId in searchMarkerIds) {
+            _markerPostMap.remove(markerId);
+          }
+          
+          AppLogger.log('✅ Создан новый менеджер аннотаций и удалены поисковые маркеры');
+          
+          // Перезагружаем маркеры постов
+          await _loadPostMarkers();
+        } catch (e) {
+          AppLogger.log('❌ Ошибка при создании нового менеджера аннотаций: $e');
+        }
+      } else {
+        AppLogger.log('✅ Поисковых маркеров для удаления не найдено');
+      }
+    } catch (e) {
+      AppLogger.log('❌ Ошибка при очистке поисковых маркеров: $e');
+    }
+  }
+  
+  // Метод для прокрутки к посту по его ID
+  void _scrollToPostById(String postId) {
+    if (!_feedScrollController.hasClients) {
+      AppLogger.log('⚠️ Контроллер скролла не инициализирован');
+      return;
+    }
+    
+    // Находим индекс поста в списке
+    int postIndex = _posts.indexWhere((p) => p.id == postId);
+    
+    if (postIndex != -1) {
+      AppLogger.log('📜 Прокрутка к посту с ID $postId (индекс $postIndex из ${_posts.length})');
+      
+      // Более точный расчет положения поста в списке
+      double approximatePostHeight = 350.0; // Базовая высота поста
+      double offset = postIndex * approximatePostHeight;
+      
+      // Вычитаем немного, чтобы видеть верх поста
+      if (offset > 50) offset -= 50;
+      
+      AppLogger.log('📏 Расчетное смещение для прокрутки: $offset');
+      
+      // Прокручиваем к позиции поста
+      _feedScrollController.animateTo(
+        offset,
+        duration: Duration(milliseconds: 800),
+        curve: Curves.easeInOut,
+      );
+      
+      // Добавляем визуальное выделение поста
+      setState(() {
+        _lastViewedPostIndex = postIndex;
+        AppLogger.log('✅ Установлен индекс выделенного поста: $_lastViewedPostIndex');
+      });
+      
+      // Сбрасываем выделение через некоторое время
+      Future.delayed(Duration(seconds: 5), () {
+        if (mounted) {
+          setState(() {
+            _lastViewedPostIndex = -1;
+            AppLogger.log('✅ Сброшен индекс выделенного поста');
+          });
+        }
+      });
+    } else {
+      AppLogger.log('❌ Пост с ID $postId не найден в списке');
+    }
+  }
+  
+  // Метод для добавления кастомного маркера на карту
+  Future<void> _addCustomMarker(GeoLocation location, String name) async {
+    if (_mapboxMap == null || !_isMapLoaded || _pointAnnotationManager == null) {
+      AppLogger.log('⚠️ Нельзя добавить маркер: карта не инициализирована');
+      return;
+    }
+    
+    try {
+      AppLogger.log('🔖 Добавление маркера для: $name (${location.latitude}, ${location.longitude})');
+      
+      // Загружаем изображение маркера
+      Uint8List bytes;
+      try {
+        final ByteData byteData = await rootBundle.load('assets/Images/map-marker.png');
+        bytes = byteData.buffer.asUint8List();
+        AppLogger.log('✅ Маркер успешно загружен из assets/Images/map-marker.png');
+      } catch (e) {
+        AppLogger.log('❌ Ошибка при загрузке изображения маркера: $e. Создаем изображение программно...');
+        
+        // Создаем простой красный квадрат как маркер
+        final ui.PictureRecorder recorder = ui.PictureRecorder();
+        final ui.Canvas canvas = ui.Canvas(recorder);
+        final ui.Paint paint = ui.Paint()..color = Colors.red;
+        canvas.drawRect(Rect.fromLTWH(0, 0, 50, 50), paint);
+        final ui.Image image = await recorder.endRecording().toImage(50, 50);
+        final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+        
+        if (byteData == null) {
+          throw Exception('Failed to create marker image');
+        }
+        bytes = byteData.buffer.asUint8List();
+      }
+      
+      // Создаем опции для маркера
+      final pointAnnotationOptions = PointAnnotationOptions(
+        geometry: Point(
+          coordinates: Position(
+            location.longitude,
+            location.latitude,
+          ),
+        ),
+        image: bytes,
+        iconSize: 0.5, // Уменьшаем размер маркера
+      );
+      
+      // Добавляем маркер на карту
+      final annotation = await _pointAnnotationManager!.create(pointAnnotationOptions);
+      
+      // Создаем временный пост для маркера
+      final post = Post(
+        id: 'search_${DateTime.now().millisecondsSinceEpoch}',
+        user: 'current_user',
+        description: 'Search result',
+        locationName: name,
+        location: location,
+        images: [],
+        createdAt: DateTime.now(),
+      );
+      
+      // Сохраняем маркер и связываем его с постом
+      _markerPostMap[annotation.id] = post;
+      
+      AppLogger.log('✅ Маркер успешно добавлен с ID: ${annotation.id}');
+    } catch (e) {
+      AppLogger.log('❌ Ошибка при добавлении маркера: $e');
+    }
+  }
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    
+    AppLogger.log("🔄 HOME TAB: didChangeDependencies called");
+
+    // Обработка изменений фильтра
+    if (_mapFilterSubscription == null) {
+      _mapFilterSubscription = _mapFilterService.onFilterChange.listen((filterState) {
+        AppLogger.log("Filter state changed: ${filterState.toJson()}");
+        if (filterState.showOnlyFavorites != _showOnlyFavorites) {
+          setState(() {
+            _showOnlyFavorites = filterState.showOnlyFavorites;
+          });
+          if (_activeView == 'map' && _showOnlyFavorites) {
+             // Ensure the flag is checked before reloading
+             if (!_showingSpecificPost) { // Double check flag just before call
+               _reloadMarkers();
+             } else {
+                AppLogger.log("ℹ️ Skipping _reloadMarkers in didChangeDependencies (filter change) due to focus.");
+             }
+          }
+        }
+      });
+    }
+
+    // Стандартная логика перезагрузки
+    if (_mapboxMap != null) {
+       // Ensure the flag is checked before reloading
+       if (!_showingSpecificPost) { // Double check flag just before call
+         // Перезагружаем стиль карты и маркеры при возвращении на экран, но без показа загрузки
+         AppLogger.log("🔄 HOME TAB: Reloading map style and markers in didChangeDependencies");
+         _reloadMapStyleAndMarkers(); // This eventually calls _loadPostMarkers which checks flag
+       } else {
+         AppLogger.log("ℹ️ Skipping _reloadMapStyleAndMarkers in didChangeDependencies due to focus.");
+       }
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    AppLogger.log("HomeTab initState called");
+    // Initialize controllers and listeners
+    _feedScrollController.addListener(_onFeedScroll);
+    
+    // Start loading data
+    _initializeMapAndData(); // Call combined initialization method
+    
+    // Load user data
+    _loadUserData();
+    
+    // Setup timer for periodic refresh
+    _postsRefreshTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      AppLogger.log('⏳ Periodic refresh timer triggered');
+      if (mounted) {
+         _loadAllPosts(); // Reload all posts
+      }
+    });
+    
+    // Load initial camera options
+    _loadSavedCameraOptions();
+  }
+  
+  // Combined initialization method
+  Future<void> _initializeMapAndData() async {
+    if (!mounted) return;
+    setState(() {
+      _isMapLoading = true; // Show loading indicator
+    });
+    await _determinePosition();
+    await _initializeMap(); // Initialize map (including _loadPostMarkers)
+    await _loadAllPosts(); // Load posts after map might be ready
+    if (mounted) {
+       setState(() {
+         _isMapLoading = false; // Hide loading indicator
+       });
+    }
+  }
+
+  @override
+  void dispose() {
+    AppLogger.log("HomeTab: dispose");
+
+    // Останавливаем анимацию
+    _pulseAnimationController.dispose();
+
+    // Удаляем слушатель и освобождаем ресурсы контроллера скролла
+    _feedScrollController.removeListener(_onFeedScroll);
+    _feedScrollController.dispose();
+
+    // Remove observer
+    WidgetsBinding.instance.removeObserver(this);
+
+    // Cancel location subscription first
+    if (_locationSubscription != null) {
+      _locationSubscription?.cancel();
+      _locationSubscription = null;
+      AppLogger.log("Location subscription canceled");
+    }
+
+    // Cancel posts refresh timer
+    if (_postsRefreshTimer != null) {
+      _postsRefreshTimer?.cancel();
+      _postsRefreshTimer = null;
+      AppLogger.log("Posts refresh timer canceled");
+    }
+
+    // Clean up map resources
+    _cleanupMapResources(); // Call the async version
+
+    // Отменяем таймер мониторинга камеры при уничтожении виджета
+    _cameraMonitorTimer?.cancel();
+    
+    // Отписываемся от обновлений фильтра карты
+    _mapFilterSubscription?.cancel();
+    
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(HomeTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (_mapboxMap != null && _isMapLoaded && _currentPosition != null) {
+      // Если карта уже загружена и есть местоположение, просто обновляем маркеры без показа загрузки
+      _loadPostMarkers();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    AppLogger.log("AppLifecycleState changed to: $state");
+
+    if (state == AppLifecycleState.resumed) {
+      // Когда приложение возвращается в активное состояние
+      AppLogger.log("App resumed, refreshing posts and markers");
+
+      // Reload posts and markers
+      _loadAllPosts();
+
+      // Restart timer
+      _startPostsRefreshTimer();
+    } else if (state == AppLifecycleState.paused) {
+      // Когда приложение уходит в фоновый режим
+      // Останавливаем таймер обновления
+      _postsRefreshTimer?.cancel();
+      _postsRefreshTimer = null;
+    } else if (state == AppLifecycleState.inactive) {
+      // App is inactive
+      AppLogger.log("App inactive");
+    } else if (state == AppLifecycleState.detached) {
+      // App is detached
+      AppLogger.log("App detached, cleaning up resources");
+      // Ensure resources are properly cleaned up
+      _cleanupMapResources();
+    }
+  }
+
+  /// Check and request location permissions
+  Future<bool> _checkLocationPermission() async {
+    AppLogger.log("Checking location permissions");
+
+    // Check location service
+    bool serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      AppLogger.log("Location service is disabled");
+      if (mounted) {
+        setState(() {
+          _error = "Location service is disabled. Please enable it in settings";
+        });
+      }
+      return false;
+    }
+
+    // Check permissions
+    geo.LocationPermission permission = await geo.Geolocator.checkPermission();
+
+    if (permission == geo.LocationPermission.denied) {
+      AppLogger.log("Location permission denied, requesting...");
+      permission = await geo.Geolocator.requestPermission();
+
+      if (permission == geo.LocationPermission.denied) {
+        AppLogger.log("Location permission denied again");
+        if (mounted) {
+          setState(() {
+            _error = "Location access denied. Some features will be unavailable";
+          });
+        }
+        return false;
+      }
+    }
+
+    if (permission == geo.LocationPermission.deniedForever) {
+      AppLogger.log("Location permission denied forever");
+      if (mounted) {
+        setState(() {
+          _error = "Location access permanently denied. Please change settings in system preferences";
+        });
+      }
+      return false;
+    }
+
+    // Permissions granted
+    AppLogger.log("Location permissions granted");
+    return true;
+  }
+
+  Future<geo.Position> _determinePosition() async {
+    bool serviceEnabled;
+    geo.LocationPermission permission;
+
+    // Test if location services are enabled
+    serviceEnabled = await geo.Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      // Location services are not enabled
+      return Future.error('Location services are disabled. Please enable location services to continue.');
+    }
+
+    permission = await geo.Geolocator.checkPermission();
+    if (permission == geo.LocationPermission.denied) {
+      permission = await geo.Geolocator.requestPermission();
+      if (permission == geo.LocationPermission.denied) {
+        // Permissions are denied
+        return Future.error('Location permissions are denied. Please grant location permissions to continue.');
+      }
+    }
+
+    if (permission == geo.LocationPermission.deniedForever) {
+      // Permissions are denied forever
+      return Future.error(
+          'Location permissions are permanently denied. Please enable location permissions in your device settings.'
+      );
+    }
+
+    // When permissions are granted
+    return await geo.Geolocator.getCurrentPosition();
+  }
+
+  // Move camera to current position
+  Future<void> _moveToCurrentPosition() async {
+    if (_mapboxMap == null) {
+      AppLogger.log("Map is not initialized");
+      return;
+    }
+
+    try {
+      setState(() {
+        _isMapLoading = true;
+      });
+
+      // Получаем текущую позицию
+      geo.Position position = await geo.Geolocator.getCurrentPosition();
+
+      _currentPosition = GeoLocation(
+          latitude: position.latitude,
+          longitude: position.longitude
+      );
+
+      // Обновляем настройки камеры перед перемещением
+      await _updateCameraOptions();
+
+      // Сохраняем текущий зум перед перемещением
+      double currentZoom = _lastCameraOptions?.zoom ?? 12.0;
+
+      // Перемещаем камеру к позиции с сохранением зума
+      await _mapboxMap!.flyTo(
+          CameraOptions(
+            center: Point(
+                coordinates: Position(
+                    _currentPosition!.longitude,
+                    _currentPosition!.latitude
+                )
+            ),
+            zoom: currentZoom, // Используем сохраненный зум
+          ),
+          MapAnimationOptions(duration: 1000)
+      );
+
+      setState(() {
+        _isMapLoading = false;
+      });
+    } catch (e) {
+      AppLogger.log("Error getting current position: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e")),
+      );
+      setState(() {
+        _isMapLoading = false;
+      });
+    }
+  }
+
+  /// Called when map is created
+  Future<void> _onMapCreated(MapboxMap mapboxMap) async {
+    AppLogger.log("Map created callback received");
+    try {
+      _mapboxMap = mapboxMap;
+      
+      // Отключаем шкалу масштаба
+      try {
+        await mapboxMap.scaleBar.updateSettings(
+          ScaleBarSettings(
+            position: OrnamentPosition.TOP_LEFT,
+            marginLeft: -9999,
+            marginTop: -9999,
+            marginBottom: -9999,
+            marginRight: -9999,
+            enabled: false,
+            height: 0,
+            borderWidth: 0,
+            textSize: 0,
+            textColor: 0x00000000,
+            primaryColor: 0x00000000,
+            secondaryColor: 0x00000000,
+          ),
+        );
+        AppLogger.log("✅ Шкала масштаба отключена");
+      } catch (e) {
+        AppLogger.log("⚠️ Ошибка при отключении шкалы масштаба: $e");
+      }
+      
+      // Изменяем стиль карты на навигационный
+      try {
+        await mapboxMap.loadStyleURI(MapboxConfig.NAVIGATION_STYLE_URI);
+        AppLogger.log("✅ Стиль карты изменен на навигационный");
+      } catch (e) {
+        AppLogger.log("⚠️ Ошибка при изменении стиля карты: $e");
+      }
+      
+      // Register with MapboxMapsSnapshot
+      mapboxMap.annotations.createPointAnnotationManager().then((value) {
+        _pointAnnotationManager = value;
+        
+        // Register point annotation clicks
+        _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
+        AppLogger.log("Point annotation manager created, listener registered");
+      });
+      
+      // Устанавливаем флаг, что карта загружена
+      setState(() {
+        _isMapLoaded = true;
+        AppLogger.log("Map loaded flag set to true");
+      });
+      
+      // Добавляем слой, если есть текущее местоположение
+      if (_currentPosition != null) {
+        _addUserLocationLayer();
+      }
+      
+      // Попробуем загрузить посты и добавить маркеры
+      _loadPostMarkers();
+      
+      // Обрабатываем отложенные действия
+      _processPendingActions();
+      
+      // Save camera state
+      if (_lastCameraOptions == null && _currentPosition != null) {
+        _lastCameraOptions = CameraOptions(
+          center: Point(
+            coordinates: Position(
+              _currentPosition!.longitude,
+              _currentPosition!.latitude
+            )
+          ),
+          zoom: 12.0,
+        );
+        AppLogger.log("Camera state saved: zoom=${_lastCameraOptions?.zoom}, center=${_lastCameraOptions?.center?.coordinates.lng},${_lastCameraOptions?.center?.coordinates.lat}");
+        _saveCameraOptions();
+      }
+    } catch (e) {
+      AppLogger.log("Error initializing map: $e");
+      if (mounted) {
+        setState(() {
+          _error = "Map initialization error: $e";
+          _isMapLoading = false;
+        });
+      }
+    }
+  }
+
+  // Start monitoring camera position
+  void _startCameraMonitor() {
+    // Cancel existing timer if any
+    _cameraMonitorTimer?.cancel();
+    
+    // Create a new timer that checks camera position every 5 seconds
+    _cameraMonitorTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (_mapboxMap != null && _isMapLoaded) {
+        _updateCameraOptions();
+      }
+    });
+  }
+
+  /// Loads all posts from PostService
+  Future<void> _loadAllPosts() async {
+    // Add check for the flag
+    if (_showingSpecificPost) {
+      AppLogger.log("ℹ️ Skipping _loadAllPosts while focusing on a specific post.");
+      return;
+    }
+    try {
+      final posts = await PostService.getAllPosts();
+      
+      if (mounted) {
+        setState(() {
+          _posts = posts;
+        });
+        
+        // Загружаем маркеры на карту, если карта уже загружена
+        if (_isMapLoaded) {
+          // Если фильтр активен, применяем его
+          if (_showOnlyFavorites) {
+            _reloadMarkers(); // This one already checks the flag internally
+          } else {
+            // Иначе загружаем все посты
+            // We might need a dedicated function that doesn't clear all markers here
+            // For now, let's ensure _reloadMarkers is called, which checks the flag.
+             _reloadMarkers(); // Ensure flag check is hit
+          }
+        }
+      }
+    } catch (e) {
+      AppLogger.log("Error loading posts: $e");
+    }
+  }
+
+  /// Метод для загрузки маркеров постов
+  Future<void> _loadPostMarkers() async {
+    if (_mapboxMap == null || !_isMapLoaded) {
+      AppLogger.log("Cannot load markers: map is not loaded");
+      return;
+    }
+    
+    // Проверяем флаг _showingSpecificPost, чтобы избежать конфликта с показом конкретного поста
+    if (_showingSpecificPost) {
+      AppLogger.log("⚠️ Пропускаем загрузку маркеров, так как показывается конкретный пост");
+      return;
+    }
+
+    // Check the annotation processing lock
+    if (_isProcessingAnnotations) {
+        AppLogger.log("⚠️ Cannot load markers, annotation processing is already in progress.");
+        return; 
+    }
+
+    // Set lock
+    if (mounted) _isProcessingAnnotations = true;
+
+    try {
+      setState(() {
+        _markersLoading = true;
+      });
+
+      // --- Replace deleteAll with manager recreation ---
+      try {
+          AppLogger.log("🔄 Recreating annotation manager instead of deleteAll in _loadPostMarkers");
+          final annotations = await _mapboxMap!.annotations;
+          // Remove listener maybe? The plugin might handle this when manager is GC'd or replaced.
+          // Let's assume creating a new one implicitly replaces the old one's listener binding.
+          _pointAnnotationManager = await annotations.createPointAnnotationManager();
+          // Re-add listener to the new manager
+          _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+          AppLogger.log("✅ New annotation manager created in _loadPostMarkers");
+          _markerPostMap = {}; // Clear the Dart-side map as well
+      } catch (e) {
+          AppLogger.log("❌ Error recreating annotation manager in _loadPostMarkers: $e");
+          if (mounted) {
+             setState(() {
+               _markersLoading = false;
+               _error = "Error recreating annotation manager: $e";
+             });
+          }
+          // Release lock on error
+          if (mounted) _isProcessingAnnotations = false;
+          return; // Exit if we can't get a manager
+      }
+      // --- End of replacement ---
+
+      AppLogger.log("Reloading markers with filter: showOnlyFavorites=${_showOnlyFavorites}");
+
+      // Новая карта для связи маркеров и постов
+      final Map<String, Post> newMarkerPostMap = {};
+      int addedCount = 0;
+      int failedCount = 0;
+
+      // Создаем маркеры для всех постов
+      for (var post in _posts) {
+        try {
+          // Проверяем, является ли этот пост выбранным (тем, на локацию которого кликнули)
+          final bool isHighlightedPost = _lastViewedPost != null && _lastViewedPost!.id == post.id;
+          
+          AppLogger.log("Creating marker for post ${post.id} at ${post.location.latitude},${post.location.longitude}${isHighlightedPost ? ' (HIGHLIGHTED)' : ''}");
+
+          // Проверка наличия координат
+          if (post.location == null) {
+            AppLogger.log("Post ${post.id} has no location, skipping marker");
+            continue;
+          }
+
+          // Создаем точку для маркера
+          final point = Point(
+              coordinates: Position(
+                  post.location.longitude,
+                  post.location.latitude
+              )
+          );
+
+          // Настройки маркера
+          String markerImageId = "marker-15"; // Используем стандартный маркер по умолчанию
+          // Временно отключаем увеличение размера маркера для выделенного поста
+          // double iconSize = isHighlightedPost ? 1.5 : 0.6; // Увеличенный размер для выделенного поста
+          double iconSize = 0.3; // Используем стандартный размер для всех маркеров (уменьшен в 2 раза)
+          bool hasImage = false;
+
+          // Если у поста есть изображения, используем одно из них для маркера
+          if (post.imageUrls.isNotEmpty) {
+            try {
+              // Берем первое доступное изображение
+              String imageUrl = post.imageUrls.first;
+
+              // При необходимости корректируем URL
+              if (!imageUrl.startsWith("http")) {
+                if (imageUrl.startsWith("/")) {
+                  imageUrl = imageUrl.substring(1);
+                }
+                imageUrl = "${ApiConfig.baseUrl}/${imageUrl}";
+              }
+
+              // ВАЖНО: проверяем, есть ли изображение в кэше по ID
+              final String cacheId = "post-marker-${post.id}";
+
+              if (MapboxConfig.markerImageBytesCache.containsKey(cacheId)) {
+                AppLogger.log("✅ Using cached image for marker: $cacheId");
+                hasImage = true;
+                markerImageId = cacheId;
+              } else {
+                // Если изображения нет в кэше, загружаем его
+                final http.Response response = await http.get(Uri.parse(imageUrl));
+
+                if (response.statusCode == 200) {
+                  final Uint8List imageBytes = response.bodyBytes;
+
+                  // Регистрируем изображение как маркер
+                  markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                      _mapboxMap!,
+                      imageBytes,
+                      post.id
+                  );
+
+                  AppLogger.log("Registered image as marker: $markerImageId");
+                  hasImage = true;
+                }
+              }
+            } catch (e) {
+              AppLogger.log("Error loading image for marker: $e");
+              // Используем стандартный маркер в случае ошибки
+              markerImageId = "marker-15";
+            }
+          }
+
+          // Создаем опции для маркера с возможным выделением
+          var options = PointAnnotationOptions(
+            geometry: point,
+            iconSize: iconSize, // Стандартный размер для всех маркеров
+            iconImage: markerImageId, // Используем ID зарегистрированного изображения или стандартный маркер
+            textField: post.locationName,
+            // Временно отключаем увеличение размера текста для выделенного поста
+            // textSize: isHighlightedPost ? 14.0 : 12.0, // Увеличенный текст для выделенного поста
+            textSize: 12.0, // Стандартный размер текста для всех маркеров
+            textOffset: [0, 3.0], // Отодвигаем текст немного дальше от маркера
+            textColor: 0xFF000000, // Черный текст
+            textHaloColor: 0xFFFFFFFF, // Белая обводка
+            textHaloWidth: 2.0, // Толщина обводки
+            iconOffset: [0, 0], // Центрируем изображение маркера
+          );
+
+          AppLogger.log("Creating marker with iconImage='${options.iconImage}', iconSize=${options.iconSize}");
+
+          // Добавляем маркер на карту
+          final pointAnnotation = await _pointAnnotationManager?.create(options);
+
+          if (pointAnnotation != null) {
+            // Сохраняем соответствие между маркером и постом
+            newMarkerPostMap[pointAnnotation.id] = post;
+            AppLogger.log("Added marker with ID: ${pointAnnotation.id} for post ${post.id}");
+            addedCount++;
+          } else {
+            AppLogger.log("Failed to add marker, result is null");
+            failedCount++;
+          }
+        } catch (e) {
+          AppLogger.log("Error adding marker for post ${post.id}: $e");
+          failedCount++;
+        }
+      }
+
+      // Обновляем карту маркеров
+      _markerPostMap = newMarkerPostMap;
+
+      // Добавляем обработчик нажатия на маркеры
+      _addMarkerClickListener();
+
+      AppLogger.log("Добавлено $addedCount маркеров из ${_posts.length} постов");
+
+      setState(() {
+        _markersLoading = false;
+      });
+    } catch (e) {
+      AppLogger.log("Error loading markers: $e");
+      setState(() {
+        _markersLoading = false;
+        _error = "Error loading markers: $e";
+      });
+    } finally {
+       // Release lock
+       if (mounted) _isProcessingAnnotations = false;
+    }
+  }
+
+  // Метод для добавления обработчика кликов по маркерам
+  void _addMarkerClickListener() {
+    if (_pointAnnotationManager != null) {
+      // Создаем обработчик кликов
+      try {
+        // Добавляем обработчик кликов
+        _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
+      } catch (e) {
+        AppLogger.log("Error adding marker click listener: $e");
+      }
+    }
+  }
+
+  /// Перемещение камеры к указанной позиции
+  Future<void> _moveCamera(GeoLocation location) async {
+    if (_mapboxMap == null) return;
+
+    try {
+      // Обновляем настройки камеры перед перемещением
+      await _updateCameraOptions();
+
+      // Используем сохраненный зум или значение по умолчанию
+      double zoom = _lastCameraOptions?.zoom ?? 12.0;
+
+      final cameraOptions = CameraOptions(
+          center: Point(
+              coordinates: Position(
+                  location.longitude,
+                  location.latitude
+              )
+          ),
+          zoom: zoom // Используем сохраненный зум
+      );
+      await _mapboxMap!.setCamera(cameraOptions);
+      AppLogger.log("Камера перемещена к позиции: ${location.latitude}, ${location.longitude}, zoom: $zoom");
+    } catch (e) {
+      AppLogger.log("Ошибка перемещения камеры: $e");
+    }
+  }
+
+  /// Метод для обновления местоположения пользователя
+  void _updateUserLocation(geo.Position position) {
+    if (mounted) {
+      setState(() {
+        _currentPosition = GeoLocation(
+            latitude: position.latitude,
+            longitude: position.longitude
+        );
+      });
+
+      if (_mapboxMap != null && _isMapLoaded) {
+        // Обновляем маркеры после обновления позиции
+        _loadPostMarkers();
+      }
+    }
+  }
+
+  // Animation for new post marker appearance
+  void _animateNewPostMarker(GeoLocation location) async {
+    try {
+      if (_mapboxMap == null) {
+        AppLogger.log("⚠️ Cannot animate marker: map is not initialized");
+        return;
+      }
+
+      AppLogger.log("🎉 Animating new marker at coordinates: ${location.latitude}, ${location.longitude}");
+
+      // First make sure any existing markers are loaded
+      await _loadPostMarkers();
+
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Your post has been published successfully!"),
+              duration: Duration(seconds: 3),
+            )
+        );
+      }
+
+      // Calculate the camera position with an initial wide view
+      final initialCamera = CameraOptions(
+        center: Point(
+            coordinates: Position(location.longitude, location.latitude)
+        ),
+        zoom: 10.0, // Start zoomed out
+        bearing: 0.0,
+        pitch: 0.0,
+      );
+
+      // First move to a wide view of the area
+      if (mounted && _mapboxMap != null) {
+        // Set camera position with animation
+        await _mapboxMap!.flyTo(
+            initialCamera,
+            MapAnimationOptions(duration: 1000)
+        );
+
+        // Wait a moment for effect
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      // Then zoom in dramatically to the new post location
+      final zoomInCamera = CameraOptions(
+        center: Point(
+            coordinates: Position(location.longitude, location.latitude)
+        ),
+        zoom: 15.0, // Zoomed in close
+        bearing: 0.0,
+        pitch: 30.0, // Tilt for dramatic effect
+      );
+
+      if (mounted && _mapboxMap != null) {
+        // Zoom in dramatically to the location
+        await _mapboxMap!.flyTo(
+            zoomInCamera,
+            MapAnimationOptions(duration: 1500)
+        );
+      }
+
+      // Add a special highlight marker for the new post
+      if (mounted && _pointAnnotationManager != null) {
+        try {
+          AppLogger.log("🎨 Creating animated highlight marker");
+
+          // Создаем опции для анимированного маркера с миниатюрой
+          // Попытаемся найти недавно созданный пост с этой локацией
+          Post? recentPost;
+
+          try {
+            // Получаем все посты
+            final allPosts = await PostService.getAllPosts();
+
+            // Обновляем локальный список постов
+            setState(() {
+              _posts = allPosts;
+            });
+
+            // Ищем пост с этой локацией (созданный не более 10 секунд назад)
+            final now = DateTime.now();
+            for (final post in allPosts) {
+              if (post.location.latitude == location.latitude &&
+                  post.location.longitude == location.longitude &&
+                  now.difference(post.createdAt).inSeconds < 10) {
+                recentPost = post;
+                AppLogger.log("📍 Found recent post for animation: ${post.id}");
+                break;
+              }
+            }
+          } catch (e) {
+            AppLogger.log("⚠️ Error finding recent post: $e");
+          }
+
+          // Переменная для хранения ID изображения маркера
+          String markerImageId = "post-marker-" + (recentPost?.id ?? "temp-" + DateTime.now().millisecondsSinceEpoch.toString());
+
+          // Если нашли недавний пост и у него есть изображения, используем первое изображение
+          if (recentPost != null && recentPost.imageUrls.isNotEmpty) {
+            try {
+              // Get the photo URL and adjust if needed to prevent duplicate paths
+              String photoUrl = recentPost.imageUrls[0];
+              if (photoUrl.startsWith('http')) {
+                // If it's already a full URL, use it as is
+                AppLogger.log("Using existing full URL: $photoUrl");
+              } else {
+                // Adjust relative path if needed
+                if (photoUrl.startsWith('/travel/')) {
+                  // Remove duplicate '/travel' prefix
+                  photoUrl = photoUrl.replaceFirst('/travel', '');
+                  AppLogger.log("Removed duplicate /travel from path: $photoUrl");
+                } else if (photoUrl.startsWith('/')) {
+                  // If it starts with /, remove it to avoid double slashes
+                  photoUrl = photoUrl.substring(1);
+                  AppLogger.log("Removed leading / from path: $photoUrl");
+                }
+
+                // Construct the full URL
+                photoUrl = '${ApiConfig.baseUrl}/$photoUrl';
+              }
+
+              AppLogger.log("Attempting to load image from URL: $photoUrl");
+
+              // Загружаем первое изображение по URL
+              final http.Response response = await http.get(Uri.parse(photoUrl));
+              if (response.statusCode == 200) {
+                final Uint8List imageBytes = response.bodyBytes;
+
+                // Регистрируем изображение как маркер
+                markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                    _mapboxMap!,
+                    imageBytes,
+                    recentPost.id
+                );
+
+                AppLogger.log("DIAGNOSTICS: registered URL image as marker with ID: $markerImageId");
+              } else {
+                AppLogger.log("DIAGNOSTICS: failed to load image from URL: ${response.statusCode}, using unique ID");
+                // Сохраняем уникальный ID
+              }
+            } catch (e) {
+              AppLogger.log("DIAGNOSTICS: error loading image from URL: $e, using unique ID");
+              // Сохраняем уникальный ID
+            }
+          }
+          // Если есть локальные изображения, используем их (для обратной совместимости)
+          else if (recentPost != null && recentPost.images.isNotEmpty) {
+            try {
+              // Читаем данные изображения
+              final File imageFile = recentPost.images[0];
+              final Uint8List imageBytes = await imageFile.readAsBytes();
+
+              // Регистрируем изображение как маркер
+              markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                  _mapboxMap!,
+                  imageBytes,
+                  recentPost.id
+              );
+
+              AppLogger.log("DIAGNOSTICS: registered post image as marker with ID: $markerImageId");
+            } catch (e) {
+              AppLogger.log("DIAGNOSTICS: error creating image marker for new post: $e, using unique ID");
+              // Сохраняем уникальный ID
+            }
+          }
+
+          // Проверяем, что изображение было успешно добавлено в стиль
+          bool hasImage = false;
+          try {
+            hasImage = await _mapboxMap!.style.hasStyleImage(markerImageId);
+            if (!hasImage) {
+              AppLogger.log("⚠️ Warning: Marker image $markerImageId not found in style after registration!");
+
+              // Дополнительно проверим, есть ли изображение в кэше
+              final bool isInCache = MapboxConfig.markerImageBytesCache.containsKey(markerImageId);
+              AppLogger.log("📋 Marker image $markerImageId in cache: $isInCache");
+
+              // Попробуем использовать базовый маркер вместо изображения
+              markerImageId = "marker-15";
+            } else {
+              AppLogger.log("✅ Marker image $markerImageId found in style and will be displayed");
+            }
+          } catch (e) {
+            AppLogger.log("❌ Error checking marker image: $e");
+            // В случае ошибки используем базовый маркер
+            markerImageId = "marker-15";
+            hasImage = true;
+          }
+
+          // Создаем опции для анимированного маркера с миниатюрой
+          var options = PointAnnotationOptions(
+            geometry: Point(
+                coordinates: Position(
+                    location.longitude,
+                    location.latitude
+                )
+            ),
+            iconSize: 0.3, // Увеличиваем размер для лучшей видимости (уменьшен в 2 раза)
+            iconImage: hasImage ? markerImageId : "", // Пустая строка, если изображение не найдено
+            textField: "New Post!",
+            textSize: 14.0, // Размер текста
+            textOffset: [0, 3.0], // Отодвигаем текст немного дальше от маркера
+            textColor: 0xFF000000, // Черный текст
+            textHaloColor: 0xFFFFFFFF, // Белая обводка
+            textHaloWidth: 2.0, // Толщина обводки
+            iconOffset: [0, 0], // Центрируем изображение маркера
+          );
+
+          // Add highlighted marker
+          final newMarker = await _pointAnnotationManager?.create(options);
+
+          // Create a temporary post for this marker
+          final tempPost = recentPost ?? Post(
+            id: 'temp_new_post',
+            user: 'You',
+            description: 'Your new post',
+            locationName: 'New Location',
+            location: location,
+            images: [], // Empty image list for temporary post
+            createdAt: DateTime.now(),
+          );
+
+          // Save marker in marker map
+          if (newMarker != null) {
+            _markerPostMap[newMarker.id] = tempPost;
+          }
+
+          // Wait a few seconds to let user see the new marker
+          await Future.delayed(Duration(seconds: 3));
+
+          AppLogger.log("DIAGNOSTICS: animation completed, refreshing markers");
+
+          // Final refresh to show all markers including the new one
+          await _loadPostMarkers();
+
+          AppLogger.log("✅ New post animation completed successfully");
+        } catch (e) {
+          AppLogger.log("❌ Error during marker animation: $e");
+          // Ensure markers are refreshed even if animation fails
+          await _loadPostMarkers();
+        }
+      }
+    } catch (e) {
+      AppLogger.log("❌ Error animating new post marker: $e");
+      if (mounted) {
+        // Make sure we still display the markers even if animation fails
+        _loadPostMarkers();
+      }
+    }
+  }
+
+  // Открываем экран загрузки изображений и получаем результат
+  void _openUploadImageScreen() async {
+    try {
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const UploadImageScreen(),
+        ),
+      );
+
+      // Если пост был опубликован и получена локация
+      if (result != null && result is GeoLocation) {
+        AppLogger.log('Получены данные для анимации нового маркера: ${result.latitude}, ${result.longitude}');
+        // Анимируем появление нового маркера
+        _animateNewPostMarker(result);
+      }
+    } catch (e) {
+      AppLogger.log('Error opening upload screen: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    AppLogger.log('⭐⭐⭐ BUILD ВЫЗВАН, АКТИВНЫЙ ВИД: $_activeView ⭐⭐⭐');
+    return Scaffold(
+      body: Stack(
+        children: [
+          // Основной контент (карта или список)
+          Positioned.fill(
+            child: _activeView == 'map'
+                ? _buildMapView()
+                : _buildFeedView(),
+          ),
+
+          // Переключатель видов (сдвоенные иконки внизу)
+          Positioned(
+            bottom: 25,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: _buildViewToggle(),
+            ),
+          ),
+          
+          // Кнопка геолокации в правом верхнем углу
+          if (_activeView == 'map')
+            Positioned(
+              top: 20,
+              right: 20,
+              child: Container(
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 8,
+                      offset: Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: InkWell(
+                  onTap: _moveToCurrentPosition,
+                  child: Center(
+                    child: Image.asset(
+                      'assets/Images/geo.png',
+                      width: 24,
+                      height: 24,
+                      color: Colors.blue.shade700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          
+          // Показываем индикатор активного фильтра избранных постов
+          if (_showOnlyFavorites && _activeView == 'map')
+            Positioned(
+              top: 16,
+              left: 16,
+              right: 16,
+              child: Container(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.star, color: Colors.yellow),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Showing favorite posts only',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        _mapFilterService.resetFilters();
+                      },
+                      child: Icon(Icons.close, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+      // Убираем floatingActionButton с геолокацией
+      // floatingActionButton: _activeView == 'map' ? FloatingActionButton(
+      //   onPressed: _moveToCurrentPosition,
+      //   heroTag: 'myLocation',
+      //   child: Icon(Icons.my_location),
+      // ) : null,
+    );
+  }
+
+  // Сдвоенные иконки для переключения между картой и лентой
+  Widget _buildViewToggle() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Контейнер с иконками map и list
+        Container(
+          width: 120,
+          height: 50,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(25),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 8,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Иконка карты
+              Expanded(
+                child: _buildToggleIcon(
+                  imageAsset: 'assets/Images/map.png',
+                  isActive: _activeView == 'map',
+                  view: 'map',
+                ),
+              ),
+              // Вертикальный разделитель
+              Container(
+                width: 1,
+                height: 24,
+                color: Colors.grey.shade300,
+              ),
+              // Иконка ленты
+              Expanded(
+                child: _buildToggleIcon(
+                  imageAsset: 'assets/Images/list.png',
+                  isActive: _activeView == 'feed',
+                  view: 'feed',
+                ),
+              ),
+            ],
+          ),
+        ),
+        // Минимальный отступ между контейнером и кнопкой
+        SizedBox(width: 8),
+        // Кнопка добавления поста - в отдельном белом круглом контейнере
+        Container(
+          width: 50,
+          height: 50,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 8,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: InkWell(
+            onTap: _openUploadImageScreen,
+            child: Center(
+              child: Image.asset(
+                'assets/Images/plus.png',
+                width: 24,
+                height: 24,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Одна иконка переключения
+  Widget _buildToggleIcon({
+    required String imageAsset,
+    required bool isActive,
+    required String view,
+  }) {
+    return InkWell(
+      onTap: () async {
+        AppLogger.log('⭐⭐⭐ ПЕРЕКЛЮЧЕНИЕ АКТИВНОГО ВИДА НА: $view ⭐⭐⭐');
+
+        // Перед переключением на карту, убедимся, что у нас есть актуальные настройки камеры
+        if (view == 'map' && _mapboxMap != null) {
+          // Обновляем настройки камеры
+          await _updateCameraOptions();
+          AppLogger.log("Настройки камеры обновлены перед переключением на карту: zoom=${_lastCameraOptions?.zoom}");
+        }
+
+        setState(() {
+          _activeView = view;
+        });
+        
+        // Если переключились на вид карты, перезагружаем маркеры
+        if (view == 'map' && _isMapLoaded) {
+          // Используем небольшую задержку для перезагрузки маркеров
+          Future.delayed(Duration(milliseconds: 200), () {
+            AppLogger.log("Перезагружаем маркеры после переключения на карту, фильтр: $_showOnlyFavorites");
+            _reloadMarkers();
+          });
+        }
+
+        // Если переключаемся на ленту и есть информация о последнем просмотренном посте,
+        // то прокручиваем к нему
+        if (view == 'feed' && _lastViewedPost != null && _lastViewedPostIndex >= 0) {
+          // Используем post-frame callback, чтобы прокрутка произошла после построения списка
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_feedScrollController.hasClients) {
+              // Расчетная высота одного поста
+              double approximatePostHeight = 350.0;
+
+              // Прокручиваем к позиции поста
+              _feedScrollController.animateTo(
+                _lastViewedPostIndex * approximatePostHeight,
+                duration: const Duration(milliseconds: 500),
+                curve: Curves.easeInOut,
+              );
+            }
+          });
+        }
+      },
+      borderRadius: BorderRadius.circular(25),
+      child: Container(
+        height: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.horizontal(
+            left: view == 'map' ? Radius.circular(25) : Radius.zero,
+            right: view == 'feed' ? Radius.circular(25) : Radius.zero,
+          ),
+        ),
+        child: isActive 
+          ? Container(
+              margin: EdgeInsets.all(5),
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Image.asset(
+                imageAsset,
+                width: 20,
+                height: 20,
+              ),
+            )
+          : Image.asset(
+              imageAsset,
+              width: 24,
+              height: 24,
+            ),
+      ),
+    );
+  }
+
+  Widget _buildMapView() {
+    try {
+      AppLogger.log("🗺️ Построение карты, camerOptions: ${_lastCameraOptions?.zoom}");
+      return Stack(
+        children: [
+          // Основной вид с картой или индикатором загрузки
+          _isMapLoading
+              ? const Center(
+            child: CircularProgressIndicator(),
+          )
+              : SizedBox(
+            width: double.infinity,
+            height: double.infinity,
+            child: ClipRRect(
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(30.0),
+                topRight: Radius.circular(30.0),
+                bottomLeft: Radius.zero,
+                bottomRight: Radius.zero,
+              ),
+              child: MapWidget(
+                key: ValueKey('post_map'),
+                // Используем навигационный стиль
+                styleUri: MapboxConfig.NAVIGATION_STYLE_URI,
+                // Обработчик создания карты
+                onMapCreated: _onMapCreated,
+                // Начальное положение камеры
+                cameraOptions: _lastCameraOptions ?? (_currentPosition != null
+                    ? CameraOptions(
+                  center: Point(
+                    coordinates: Position(
+                      _currentPosition!.longitude,
+                      _currentPosition!.latitude
+                    ),
+                  ),
+                  zoom: 12.0,
+                )
+                    : null
+                ),
+                // Настройки рендеринга для лучшей совместимости
+                textureView: MapboxConfig.USE_TEXTURE_VIEW,
+              ),
+            ),
+          ),
+
+          // Добавляем пульсирующую точку, если есть текущее местоположение и карта загружена
+          if (_currentPosition != null && _mapboxMap != null && _isMapLoaded && !_isMapLoading)
+            _buildPulsingUserLocationMarker(),
+
+          // Индикатор загрузки при загрузке маркеров (убираем дублирование)
+          if (_markersLoading && !_isMapLoading)
+            Container(
+              color: Colors.black.withOpacity(0.3),
+              child: const Center(
+                child: CircularProgressIndicator(),
+              ),
+            ),
+
+          // Информация о выбранном посте
+          if (_selectedPost != null)
+            _buildPostDetails(),
+
+          // Сообщение об ошибке, если есть
+          if (_error.isNotEmpty)
+            Container(
+              color: Colors.black.withOpacity(0.7),
+              padding: const EdgeInsets.all(16),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error, color: Colors.red, size: 40),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Ошибка: $_error',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _error = ''; // Используем пустую строку вместо null
+                          _isMapLoading = true;
+                        });
+                        _initializeMap();
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Повторить'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      );
+    } catch (e) {
+      // Обработка ошибок отрисовки карты
+      AppLogger.log("Error building map view: $e");
+      return Center(
+        child: Text("Ошибка построения карты: $e"),
+      );
+    }
+  }
+
+  /// Initialize map and related components
+  Future<void> _initializeMap() async {
+    // Add check for the flag
+    if (_showingSpecificPost) {
+      AppLogger.log("ℹ️ Skipping _initializeMap while focusing on a specific post.");
+      return;
+    }
+    if (!mounted) return;
+    
+    setState(() {
+      _isMapLoading = true;
+      _error = ''; // Используем пустую строку вместо null
+    });
+
+    AppLogger.log("Инициализация карты. Сохраненные настройки: zoom=${_lastCameraOptions?.zoom}");
+    
+    // Если у нас уже есть местоположение и настройки карты, просто отображаем карту
+    // Не нужно больше ничего делать здесь, маркеры загрузятся при создании карты
+
+    setState(() {
+      _isMapLoading = false;
+    });
+  }
+
+  /// View post details
+  Widget _buildPostDetails() {
+    if (_selectedPost == null) return const SizedBox.shrink();
+
+    try {
+      return Positioned(
+        bottom: 16,
+        left: 16,
+        right: 16,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 10,
+                offset: const Offset(0, 5),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Шапка с названием места и кнопкой удаления
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      _selectedPost!.locationName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    tooltip: 'Удалить пост',
+                    onPressed: () {
+                      _deletePost(_selectedPost!);
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              // Описание
+              Text(
+                _selectedPost!.description,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 12),
+
+              // Кнопка просмотра
+              ElevatedButton(
+                onPressed: () => _openPostDetails(_selectedPost!),
+                child: const Text('Подробнее'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (e) {
+      AppLogger.log("Ошибка отображения деталей поста: $e");
+      return const SizedBox.shrink();
+    }
+  }
+
+  // Вид с лентой постов
+  Widget _buildFeedView() {
+    AppLogger.log('🔴🔴🔴 ВЫЗОВ _buildFeedView, АКТИВНЫЙ ВИД: $_activeView 🔴🔴🔴');
+
+    if (_posts.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.photo_album, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text(
+              'No posts yet',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Posts from you and people you follow will appear here',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Вызываем метод _buildFeedContent() вместо использования ListView.builder
+    return _buildFeedContent();
+  }
+
+  // Получение информации об авторе поста
+  Future<Map<String, dynamic>> _getPostAuthorInfo(Post post) async {
+    if (_isCurrentUserPost(post)) {
+      // Если пост принадлежит текущему пользователю, возвращаем данные текущего пользователя
+      return {
+        'firstName': _userFullName.split(' ').first,
+        'lastName': _userFullName.split(' ').length > 1 ? _userFullName.split(' ').last : '',
+        'profileImageUrl': _userProfileImage,
+      };
+    }
+
+    // Иначе получаем информацию о пользователе по ID через API
+    final userData = await UserService.getUserInfoById(post.user);
+    return userData;
+  }
+
+  /// Показать модальное окно с комментариями
+  void _showCommentsModal(Post post) {
+    // Показываем комментарии в модальном окне снизу
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true, // Важно для правильного отображения клавиатуры
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.75,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(20),
+              topRight: Radius.circular(20),
+            ),
+          ),
+          child: CommentsScreen(
+            photoId: post.id,
+            photoUrl: post.imageUrls.isNotEmpty
+                ? post.imageUrls.first
+                : (post.images.isNotEmpty
+                ? post.images.first.path
+                : 'https://via.placeholder.com/300'),
+          ),
+        );
+      },
+    );
+  }
+
+  // Показать пост на карте - модифицированный метод
+  void _showOnMap(Post post) {
+    if (post.location == null) {
+      AppLogger.log("❌ Невозможно показать пост на карте: отсутствуют координаты");
+      return;
+    }
+    
+    AppLogger.log("📍 Показываем пост ${post.id} на карте с координатами ${post.location!.latitude}, ${post.location!.longitude}");
+    
+    // Check the annotation processing lock FIRST
+    if (_isProcessingAnnotations) {
+        AppLogger.log("⚠️ Cannot show post on map, annotation processing is already in progress.");
+        return; // Exit if another annotation operation is running
+    }
+
+    // Устанавливаем флаг, что показываем конкретный пост
+    _showingSpecificPost = true;
+    
+    // Сохраняем пост для дальнейшего использования
+    _lastViewedPost = post;
+    _lastViewedPostIndex = _posts.indexWhere((p) => p.id == post.id);
+    if (_lastViewedPostIndex == -1) {
+      AppLogger.log("⚠️ Пост не найден в списке, индекс установлен в -1");
+    }
+
+    _updateCameraOptions();
+
+    setState(() {
+      _activeView = 'map';
+    });
+    
+    Future.delayed(Duration(milliseconds: 300), () async {
+      if (!mounted || _mapboxMap == null) { 
+         AppLogger.log("❌ Карта недоступна после переключения вида");
+         _showingSpecificPost = false; // Reset flag on exit
+         return; 
+      }
+      
+      // Убедимся, что post всё еще нужный объект (проверка данных)
+      AppLogger.log("🔍 Проверка данных поста перед отображением: ID=${post.id}, координаты=${post.location!.latitude},${post.location!.longitude}");
+      
+      // Set the processing lock
+      if (mounted) _isProcessingAnnotations = true;
+
+      try {
+        AppLogger.log("🎯 Отображаем маркер конкретно для поста: ${post.id}");
+        
+         // --- Replace deleteAll with manager recreation ---
+        try {
+            AppLogger.log("🔄 Recreating annotation manager instead of deleteAll in _showOnMap");
+            final annotations = await _mapboxMap!.annotations;
+            _pointAnnotationManager = await annotations.createPointAnnotationManager();
+             // Re-add listener to the new manager
+            _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+            AppLogger.log("✅ New annotation manager created in _showOnMap");
+            _markerPostMap = {}; // Clear the Dart-side map as well
+        } catch (e) {
+            AppLogger.log("❌ Error recreating annotation manager in _showOnMap: $e");
+            // Don't reset _showingSpecificPost here, let finally handle it
+            if(mounted) _isProcessingAnnotations = false; // Release lock on error
+            _showingSpecificPost = false; // Reset flag on error
+            return; // Exit if we can't get a manager
+        }
+        
+        // Создаем новую карту для соответствий маркеров и постов
+        final Map<String, Post> newMarkerPostMap = {};
+        
+        // Создаем точку для маркера с проверкой данных
+        final point = Point(
+          coordinates: Position(
+            post.location!.longitude, 
+            post.location!.latitude
+          )
+        );
+        AppLogger.log("📌 Создаем точку с координатами: ${point.coordinates.lng}, ${point.coordinates.lat}");
+        
+        // Получаем текущий zoom карты (вместо принудительной установки zoom: 15.0)
+        double currentZoom = 15.0; // Значение по умолчанию, если не удастся получить текущий zoom
+        try {
+          final cameraState = await _mapboxMap!.getCameraState();
+          if (cameraState != null) {
+            currentZoom = cameraState.zoom;
+            AppLogger.log("📏 Текущий zoom карты: $currentZoom");
+          }
+        } catch (e) {
+          AppLogger.log("⚠️ Не удалось получить текущий zoom карты: $e");
+        }
+        
+        // Переместим камеру к нужной локации, сохраняя текущий zoom
+        await _mapboxMap!.flyTo(
+          CameraOptions(
+            center: point,
+            zoom: currentZoom, // Используем текущий zoom вместо фиксированного значения
+            pitch: 30.0,
+          ),
+          MapAnimationOptions(duration: 1000),
+        );
+        AppLogger.log("🔍 Камера перемещена к координатам: ${point.coordinates.lng}, ${point.coordinates.lat} с сохранением zoom: $currentZoom");
+        
+        // Создаем маркер для указанного поста
+        try {
+          // Получаем ID для изображения маркера
+          String markerImageId = "marker-15"; // Default fallback
+          if (post.imageUrls.isNotEmpty) {
+            String imageUrl = post.imageUrls.first;
+            if (!imageUrl.startsWith("http")) {
+              if (imageUrl.startsWith("/")) imageUrl = imageUrl.substring(1);
+              imageUrl = "${ApiConfig.baseUrl}/${imageUrl}";
+            }
+            
+            final String cacheId = "post-marker-${post.id}";
+            AppLogger.log("🖼️ Attempting to use image for marker: $cacheId with URL: $imageUrl");
+            
+            // Проверяем, есть ли изображение уже в стиле карты
+            bool existsInStyle = false;
+            try {
+              existsInStyle = await _mapboxMap!.style.hasStyleImage(cacheId);
+              AppLogger.log("🔍 Image exists in style? $existsInStyle");
+            } catch (e) {
+              AppLogger.log("⚠️ Ошибка проверки наличия изображения в стиле: $e");
+            }
+            
+            if (existsInStyle) {
+              markerImageId = cacheId;
+              AppLogger.log("✅ Используем существующее изображение из стиля: $cacheId");
+            } else if (MapboxConfig.markerImageBytesCache.containsKey(cacheId)) {
+              // Если есть в кэше, регистрируем
+              AppLogger.log("🖼️ Изображение есть в кэше, регистрируем: $cacheId");
+              try {
+                markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                  _mapboxMap!,
+                  MapboxConfig.markerImageBytesCache[cacheId]!,
+                  post.id
+                );
+                AppLogger.log("✅ Зарегистрировано изображение из кэша: $markerImageId");
+              } catch (e) {
+                AppLogger.log("❌ Ошибка регистрации изображения из кэша: $e");
+                markerImageId = "marker-15";
+              }
+            } else {
+              // Загружаем и регистрируем новое изображение
+              AppLogger.log("🔄 Загружаем изображение с URL: $imageUrl");
+              try {
+                final http.Response response = await http.get(Uri.parse(imageUrl));
+                if (response.statusCode == 200) {
+                  final Uint8List imageBytes = response.bodyBytes;
+                  markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                    _mapboxMap!,
+                    imageBytes,
+                    post.id
+                  );
+                  AppLogger.log("✅ Загружено и зарегистрировано новое изображение: $markerImageId");
+                  
+                  // Сохраняем в кэш для будущего использования
+                  MapboxConfig.markerImageBytesCache[cacheId] = imageBytes;
+                } else {
+                  AppLogger.log("⚠️ Не удалось загрузить изображение, код: ${response.statusCode}");
+                  markerImageId = "marker-15";
+                }
+              } catch (e) {
+                AppLogger.log("❌ Ошибка загрузки изображения: $e");
+                markerImageId = "marker-15";
+              }
+            }
+          }
+          
+          // Создаем опции для маркера
+          final options = PointAnnotationOptions(
+            geometry: point,
+            iconSize: 0.6, // Увеличенный размер для выделения (уменьшен в 2 раза)
+            iconImage: markerImageId,
+            textField: post.locationName,
+            textSize: 14.0, // Увеличенный текст
+            textOffset: [0, 3.0],
+            textColor: 0xFF000000,
+            textHaloColor: 0xFFFFFFFF,
+            textHaloWidth: 2.0,
+            iconOffset: [0, 0],
+          );
+          
+          AppLogger.log("🎨 Создаем маркер с изображением: ${options.iconImage}, размер: ${options.iconSize}");
+          
+          // Создаем маркер
+          final annotation = await _pointAnnotationManager?.create(options);
+          if (annotation != null) {
+            newMarkerPostMap[annotation.id] = post;
+            AppLogger.log("✅ Создан маркер с ID: ${annotation.id} для поста ${post.id}");
+          } else {
+            AppLogger.log("⚠️ Не удалось создать маркер, результат null");
+          }
+        } catch (e) {
+          AppLogger.log("❌ Ошибка создания маркера для поста ${post.id}: $e");
+        }
+        
+        // Обновляем карту маркеров
+        _markerPostMap = newMarkerPostMap;
+        
+      } catch (e) {
+        AppLogger.log("❌ Ошибка при (_showOnMap) отображении поста на карте: $e");
+        if (mounted) _showingSpecificPost = false; // Reset flag on error
+      } finally {
+        // Release lock
+        if (mounted) {
+           _isProcessingAnnotations = false;
+        }
+         AppLogger.log("🏁 Завершение _showOnMap, флаг _isProcessingAnnotations сброшен");
+      }
+    });
+  }
+
+  // Метод для визуального выделения маркера без создания нового
+  void _tryHighlightMarkerVisually(Post post) {
+    AppLogger.log("🎨 Попытка визуально выделить маркер поста ${post.id} без показа окна");
+    
+    // Здесь можно добавить логику для визуального выделения маркера
+    // Например, анимировать блинк для маркера или изменить его цвет
+    // Но сейчас просто оставляем эту функцию как заглушку
+  }
+
+  // Метод для добавления выделенного маркера поверх других
+  Future<void> _addHighlightedMarker(Post post) async {
+    if (_mapboxMap == null || _pointAnnotationManager == null) return;
+    
+    try {
+      // Создаем точку для маркера
+      final point = Point(
+        coordinates: Position(
+          post.location.longitude, 
+          post.location.latitude
+        )
+      );
+      
+      // Проверяем наличие фото-маркера для этого поста
+      final String markerImageId = "post-marker-${post.id}";
+      final bool hasImage = await _mapboxMap!.style.hasStyleImage(markerImageId);
+      final iconId = hasImage ? markerImageId : "marker-15";
+      
+      AppLogger.log("🔍 Добавляем выделенный маркер для поста ${post.id}. Фото: ${hasImage ? 'Есть' : 'Нет'}");
+      
+      // Создаем опции для выделенного маркера
+      final options = PointAnnotationOptions(
+        geometry: point,
+        iconSize: 0.75, // Увеличенный размер для выделения (уменьшен в 2 раза)
+        iconImage: iconId,
+        textField: post.locationName,
+        textSize: 14.0, // Увеличенный текст для выделения
+        textOffset: [0, 3.0],
+        textColor: 0xFF000000,
+        textHaloColor: 0xFFFFFFFF,
+        textHaloWidth: 2.0,
+        iconOffset: [0, 0],
+        iconAnchor: IconAnchor.CENTER,
+      );
+      
+      // Добавляем маркер на карту
+      final annotation = await _pointAnnotationManager!.create(options);
+      
+      // Сохраняем соответствие для нового маркера
+      if (annotation != null) {
+        _markerPostMap[annotation.id] = post;
+        AppLogger.log("✅ Создан выделенный маркер для поста ${post.id}");
+      }
+    } catch (e) {
+      AppLogger.log("❌ Ошибка при создании выделенного маркера: $e");
+    }
+  }
+
+  // Метод для редактирования поста
+  void _editPost(Post post) {
+    Navigator.push<dynamic>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => EditPostScreen(post: post),
+      ),
+    ).then((result) {
+      if (result != null) {
+        // Если пост был обновлен, обновляем данные и обновляем UI
+        if (result is Post) {
+          // Обновляем пост в локальном списке
+          final index = _posts.indexWhere((p) => p.id == post.id);
+          if (index != -1) {
+            setState(() {
+              _posts[index] = result;
+              
+              // Если у нас есть выбранный пост и это тот, который мы обновили
+              if (_selectedPost != null && _selectedPost!.id == post.id) {
+                _selectedPost = result;
+              }
+            });
+          }
+        }
+        // В любом случае обновляем посты
+        _loadAllPosts();
+      }
+    });
+  }
+
+  /// View post details
+  void _openPostDetails(Post post) {
+    // Navigation to post details screen should be here
+
+    // Close details in current view
+    setState(() {
+      _selectedPost = null;
+    });
+
+    // Navigate to details screen (placeholder)
+    // TODO: Add actual navigation to post details screen
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Viewing details for post ${post.locationName}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Удаляет пост из системы
+  Future<void> _deletePost(Post post) async {
+    // Показываем диалог подтверждения
+    final bool? shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete post?'),
+        content: const Text('This post will be permanently deleted. Continue?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    // Если пользователь подтвердил удаление
+    if (shouldDelete == true) {
+      try {
+        // Показываем индикатор загрузки
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Удаление поста...'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+        }
+
+        // Удаляем пост через сервис
+        final bool success = await PostService.deletePost(post.id);
+
+        if (!success) {
+          throw Exception("Сервер вернул ошибку при удалении поста");
+        }
+
+        // Обновляем список постов
+        await _loadAllPosts();
+
+        // Если открыт этот пост в деталях, закрываем детали
+        if (_selectedPost?.id == post.id) {
+          setState(() {
+            _selectedPost = null;
+          });
+        }
+
+        // Показываем сообщение об успешном удалении
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Пост успешно удален'),
+            ),
+          );
+        }
+      } catch (e) {
+        AppLogger.log("Ошибка при удалении поста: $e");
+
+        // Показываем сообщение об ошибке
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Ошибка при удалении поста. Пожалуйста, попробуйте снова позже.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+
+        // Всё равно обновляем список постов на случай, если пост был удалён, но произошла ошибка при получении ответа
+        try {
+          await _loadAllPosts();
+        } catch (refreshError) {
+          AppLogger.log("Ошибка при обновлении списка постов после ошибки удаления: $refreshError");
+        }
+      }
+    }
+  }
+
+  /// Initialize location service
+  Future<void> _initializeLocationService() async {
+    AppLogger.log("Initializing location service");
+
+    try {
+      // Check location permissions
+      bool hasPermission = await _checkLocationPermission();
+
+      if (!hasPermission) {
+        AppLogger.log("No permission to access location");
+        return;
+      }
+
+      // Всегда определяем текущее местоположение для кнопки "Моя геолокация"
+      AppLogger.log("Определяем текущее местоположение...");
+      // Get current position
+      geo.Position position = await geo.Geolocator.getCurrentPosition(
+        desiredAccuracy: geo.LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+
+      AppLogger.log("Current position obtained: ${position.latitude}, ${position.longitude}");
+
+      if (mounted) {
+        setState(() {
+          _currentPosition = GeoLocation(
+              latitude: position.latitude,
+              longitude: position.longitude
+          );
+        });
+      }
+    } catch (e) {
+      AppLogger.log("Error initializing location service: $e");
+      if (mounted) {
+        setState(() {
+          _error = "Error getting current position: $e";
+        });
+      }
+    }
+  }
+
+  /// Properly cleans up all map-related resources (Now Async and Safe)
+  Future<void> _cleanupMapResources() async { // Make async
+    // Check if mounted
+    if (!mounted) {
+      AppLogger.log("Widget unmounted, skipping map resource cleanup in HomeTab.");
+      return;
+    }
+
+    // Check and set lock flag
+    if (_isProcessingAnnotations) {
+      AppLogger.log("⚠️ Annotation processing already in progress, skipping _cleanupMapResources in HomeTab");
+      return;
+    }
+     // No need for setState here unless UI depends on this flag immediately
+     _isProcessingAnnotations = true; 
+
+    if (_mapboxMap != null) {
+      try {
+        AppLogger.log("Cleaning up map resources in HomeTab");
+
+        // Safely remove the annotation manager
+        if (_pointAnnotationManager != null) {
+          try {
+            // Check again before await, as state might change
+            if (!mounted || _mapboxMap == null) {
+                 _isProcessingAnnotations = false; // Release lock if check fails
+                 return; 
+            }
+            AppLogger.log("🧹 Attempting to remove annotation manager in HomeTab cleanup...");
+            await _mapboxMap!.annotations.removeAnnotationManager(_pointAnnotationManager!);
+            AppLogger.log("🧹 Annotation manager removed successfully in HomeTab cleanup");
+             // Set to null only after successful removal and if still mounted
+            if (mounted) {
+                _pointAnnotationManager = null;
+            }
+          } catch (e) {
+            AppLogger.log("🔴 Error while clearing annotations during HomeTab cleanup: $e");
+            // Still try to nullify if mounted
+             if (mounted) {
+                _pointAnnotationManager = null;
+             }
+          }
+        }
+        
+        // Release map instance *after* potentially async operations
+        if (mounted) {
+            _mapboxMap = null;
+            _isMapLoaded = false; // Set map loaded to false
+            AppLogger.log("🗺️ MapboxMap instance released for HomeTab");
+        }
+
+      } catch (e) {
+        AppLogger.log("🔴 Error while cleaning up map resources in HomeTab: $e");
+        // Attempt cleanup even on error
+        if (mounted) {
+            _pointAnnotationManager = null;
+            _mapboxMap = null;
+            _isMapLoaded = false;
+        }
+      } finally {
+         // Release lock flag
+         if (mounted) {
+           _isProcessingAnnotations = false; 
+         }
+      }
+    } else {
+        // Map was already null
+        if (mounted) {
+            _pointAnnotationManager = null;
+            _isMapLoaded = false; // Ensure loaded is false
+        }
+        // Release lock if map was already null
+         if (mounted) { // Check mounted before state change
+            _isProcessingAnnotations = false;
+         }
+    }
+  }
+
+  /// Перезагружает стиль карты и маркеры
+  Future<void> _reloadMapStyleAndMarkers() async {
+    if (_mapboxMap == null) return;
+    
+    // Проверяем флаг _showingSpecificPost
+    if (_showingSpecificPost) {
+      AppLogger.log("⚠️ Пропускаем перезагрузку стиля карты и маркеров, так как показывается конкретный пост");
+      return;
+    }
+    
+    try {
+      AppLogger.log("🔄 Reloading map style and markers");
+
+      // Предварительно загружаем все стандартные маркеры
+      await MapboxConfig.registerMapboxMarkerImages(_mapboxMap!);
+      AppLogger.log("✅ Default markers registered");
+
+      // Восстанавливаем все кэшированные изображения маркеров
+      await MapboxConfig.reinstallCachedMarkerImages(_mapboxMap!);
+      AppLogger.log("✅ Cached marker images reinstalled");
+      
+      // Перезагружаем список постов перед восстановлением маркеров
+      await _loadAllPosts();
+      AppLogger.log("✅ Posts reloaded before marker restoration");
+      
+      // Создаем новый менеджер аннотаций и загружаем маркеры
+      try {
+        final annotations = await _mapboxMap!.annotations;
+        _pointAnnotationManager = await annotations.createPointAnnotationManager();
+        _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+        AppLogger.log("✅ Created new annotation manager for marker reload");
+      } catch (e) {
+        AppLogger.log("❌ Error creating annotation manager: $e");
+      }
+      
+      // Заново загружаем маркеры постов
+      await _loadPostMarkers();
+      AppLogger.log("✅ Post markers reloaded");
+
+      AppLogger.log("✅ Map style and markers reloaded successfully");
+    } catch (e) {
+      AppLogger.log("❌ Error reloading map style and markers: $e");
+      
+      // Даже при ошибке пытаемся загрузить маркеры
+      try {
+        if (_mapboxMap != null && mounted) {
+          await _loadPostMarkers();
+          AppLogger.log("✅ Marker loading attempted after style error");
+        }
+      } catch (innerError) {
+        AppLogger.log("❌ Error in fallback marker loading: $innerError");
+      }
+    }
+  }
+  
+  // Загрузка стиль карты
+  Future<void> _loadMapStyle() async {
+    if (_mapboxMap == null) return;
+    
+    try {
+      // Устанавливаем стиль карты
+      await _mapboxMap!.loadStyleURI(MapboxConfig.DEFAULT_STYLE_URI);
+      
+      // Обновляем состояние
+      setState(() {
+        _isMapLoaded = true;
+        _isMapLoading = false;
+      });
+    } catch (e) {
+      AppLogger.log("Ошибка при загрузке стиля карты: $e");
+      setState(() {
+        _isMapLoaded = false;
+        _isMapLoading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  /// Запускает таймер обновления постов
+  void _startPostsRefreshTimer() {
+    _postsRefreshTimer?.cancel();
+    _postsRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      AppLogger.log("📱 Executing scheduled post refresh");
+      _loadAllPosts();
+    });
+
+    // Начальное обновление
+    _loadAllPosts();
+
+    AppLogger.log("⏱️ Post refresh timer started: every 10 seconds");
+  }
+
+  // Загрузка данных пользователя
+  Future<void> _loadUserData() async {
+    try {
+      final fullName = await UserService.getFullName();
+      final profileImage = await UserService.getProfileImage();
+      final email = await UserService.getEmail();
+      final userId = await UserService.getUserId(); // Получаем ID пользователя
+
+     if (mounted) {
+        setState(() {
+          _userFullName = fullName;
+          _userProfileImage = profileImage;
+          _userEmail = email;
+          _userId = userId; // Сохраняем ID пользователя
+          _userDataLoaded = true;
+        });
+      }
+    } catch (e) {
+      AppLogger.log("Error loading user data: $e");
+    }
+  }
+
+  /// Метод для построения основного контента в зависимости от активной вкладки
+  Widget _buildMainContent() {
+    AppLogger.log('⭐⭐⭐ _buildMainContent ВЫЗВАН, АКТИВНЫЙ ВИД: $_activeView ⭐⭐⭐');
+    AppLogger.log('⭐⭐⭐ ТЕКУЩИЕ НАСТРОЙКИ КАМЕРЫ: center=${_lastCameraOptions?.center?.coordinates.lng},${_lastCameraOptions?.center?.coordinates.lat} zoom=${_lastCameraOptions?.zoom} ⭐⭐⭐');
+
+    // Если активна вкладка карты
+    if (_activeView == 'map') {
+      // Если есть сохраненные настройки камеры или текущее местоположение
+      if (_lastCameraOptions != null || _currentPosition != null) {
+        return Stack(
+          children: [
+            SizedBox(
+              width: MediaQuery.of(context).size.width,
+              height: MediaQuery.of(context).size.height,
+              child: MapWidget(
+                key: const ValueKey("mapWidget"),
+                onMapCreated: _onMapCreated,
+                styleUri: MapboxConfig.DEFAULT_STYLE_URI,
+                // Используем сохраненные настройки камеры, или значения по умолчанию из текущего местоположения, если их нет
+                cameraOptions: _lastCameraOptions ?? (_currentPosition != null ? CameraOptions(
+                    center: Point(
+                        coordinates: Position(
+                            _currentPosition!.longitude,
+                            _currentPosition!.latitude
+                        )
+                    ),
+                    zoom: 12.0
+                ) : null), // Если нет ни сохраненных настроек, ни текущего местоположения, то null
+                onTapListener: (context) {
+                  // Убираем выбранный пост при нажатии на пустое место карты
+                  setState(() {
+                    _selectedPost = null;
+                  });
+                },
+              ),
+            ),
+            // Добавляем пульсирующую точку, если есть текущее местоположение
+            if (_currentPosition != null && _mapboxMap != null && !_isMapLoading)
+              _buildPulsingUserLocationMarker(),
+          ],
+        );
+      } else {
+        // Если нет ни сохраненных настроек, ни текущего местоположения, показываем индикатор загрузки
+        return const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text("Определение местоположения...", style: TextStyle(color: Colors.grey))
+              ],
+            )
+        );
+      }
+    }
+
+    // Если активна вкладка ленты
+    return _buildFeedContent();
+  }
+
+  /// Создает пульсирующий маркер для отображения текущего местоположения пользователя
+  Widget _buildPulsingUserLocationMarker() {
+    return StreamBuilder<ScreenCoordinate?>(
+      stream: Stream.periodic(const Duration(milliseconds: 100))
+          .asyncMap((_) => _getScreenCoordinatesForLocation(_currentPosition!)),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const SizedBox.shrink(); // Если координаты еще не готовы, ничего не отображаем
+        }
+
+        final screenCoordinate = snapshot.data!;
+
+        return Positioned(
+          left: screenCoordinate.x.toDouble() - 15,
+          top: screenCoordinate.y.toDouble() - 15,
+          child: AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) {
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Внешний пульсирующий круг
+                  Container(
+                    width: 30 + (10 * _pulseAnimation.value),
+                    height: 30 + (10 * _pulseAnimation.value),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue.withOpacity(0.3 * (1 - _pulseAnimation.value)),
+                    ),
+                  ),
+                  // Средний круг
+                  Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue.withOpacity(0.5),
+                    ),
+                  ),
+                  // Внутренний круг
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.blue,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  /// Преобразует геокоординаты в координаты экрана
+  Future<ScreenCoordinate?> _getScreenCoordinatesForLocation(GeoLocation location) async {
+    if (_mapboxMap == null) return null;
+
+    try {
+      final coordinate = await _mapboxMap!.pixelForCoordinate(
+        Point(
+          coordinates: Position(
+            location.longitude,
+            location.latitude,
+          ),
+        ),
+      );
+      return coordinate;
+    } catch (e) {
+      AppLogger.log('Error converting geo coordinates to screen coordinates: $e');
+      return null;
+    }
+  }
+
+  /// Строит содержимое ленты постов
+  Widget _buildFeedContent() {
+    AppLogger.log('⭐⭐⭐ ВЫЗОВ _buildFeedContent, АКТИВНЫЙ ВИД: $_activeView ⭐⭐⭐');
+
+    if (_posts.isEmpty) {
+      // Отображаем заглушку, если нет постов
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.photo_album,
+              size: 80,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Пока нет постов',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.grey[700],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                'Здесь будут отображаться посты от вас и людей, на которых вы подписаны',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.grey[600],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    AppLogger.log('🔄 _buildFeedContent: total posts loaded: ${_posts.length}');
+    AppLogger.log('⭐⭐⭐ НАЧИНАЕМ ГРУППИРОВКУ ПОСТОВ ПО ЛОКАЦИЯМ ⭐⭐⭐');
+
+    // Группируем посты по локациям
+    final Map<String, List<Post>> postsByLocation = {};
+    final Set<String> processedPosts = {};
+
+    // Функция для вычисления расстояния между двумя координатами в метрах
+    double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+      const int earthRadius = 6371000; // радиус Земли в метрах
+      final double phi1 = lat1 * pi / 180;
+      final double phi2 = lat2 * pi / 180;
+      final double deltaPhi = (lat2 - lat1) * pi / 180;
+      final double deltaLambda = (lon2 - lon1) * pi / 180;
+
+      final double a = sin(deltaPhi / 2) * sin(deltaPhi / 2) +
+          cos(phi1) * cos(phi2) *
+              sin(deltaLambda / 2) * sin(deltaLambda / 2);
+      final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+
+      return earthRadius * c; // Расстояние в метрах
+    }
+
+    // Группируем посты, находящиеся в пределах 200 метров друг от друга
+    for (var post in _posts) {
+      if (processedPosts.contains(post.id)) continue;
+
+      // Ищем ближайшую существующую группу для поста
+      String? closestGroup;
+      double minDistance = double.infinity;
+
+      for (var locationKey in postsByLocation.keys) {
+        // Берем первый пост из группы для сравнения координат
+        final firstPost = postsByLocation[locationKey]!.first;
+
+        // Проверяем также имя локации
+        bool sameName = firstPost.locationName.toLowerCase() == post.locationName.toLowerCase();
+
+        // Считаем расстояние между текущим постом и первым постом группы
+        final distance = calculateDistance(
+            post.location.latitude, post.location.longitude,
+            firstPost.location.latitude, firstPost.location.longitude
+        );
+
+        AppLogger.log('🧮🧮🧮 Сравниваем пост ${post.id} (${post.locationName}) с группой $locationKey');
+        AppLogger.log('📏📏📏 Расстояние: ${distance.toStringAsFixed(2)}м, Одинаковые имена: $sameName');
+
+        // Добавляем пост в группу если одинаковые имена ИЛИ расстояние меньше 200 метров
+        if ((sameName || distance <= 200) && distance < minDistance) {
+          closestGroup = locationKey;
+          minDistance = distance;
+          AppLogger.log('✅✅✅ Нашли подходящую группу! Группа: $locationKey, Расстояние: ${minDistance.toStringAsFixed(2)}м');
+        }
+      }
+
+      if (closestGroup != null) {
+        // Если нашли ближайшую группу, добавляем пост к ней
+        postsByLocation[closestGroup]!.add(post);
+        AppLogger.log('🔄 Post ${post.id} added to existing location group $closestGroup, distance: ${minDistance.toStringAsFixed(2)}m');
+      } else {
+        // Иначе создаем новую группу с этим постом
+        final newLocationKey = '${post.locationName}-${post.id}';
+        postsByLocation[newLocationKey] = [post];
+        AppLogger.log('🔄 Post ${post.id} created new location group: $newLocationKey');
+      }
+
+      processedPosts.add(post.id);
+    }
+
+    AppLogger.log('🔄 Grouped posts into ${postsByLocation.length} locations');
+    AppLogger.log('⭐⭐⭐ ИТОГИ ГРУППИРОВКИ ПОСТОВ ⭐⭐⭐');
+    postsByLocation.forEach((key, posts) {
+      AppLogger.log('📍📍📍 Location $key has ${posts.length} posts: ${posts.map((p) => p.id).join(", ")} 📍📍📍');
+    });
+
+    // Сортируем локации по количеству уникальных пользователей в локации
+    final List<MapEntry<String, List<Post>>> sortedLocationEntries = postsByLocation.entries.toList();
+    sortedLocationEntries.sort((a, b) {
+      // Считаем количество уникальных пользователей в каждой локации
+      final Set<String> uniqueUsersA = a.value.map((p) => p.user).toSet();
+      final Set<String> uniqueUsersB = b.value.map((p) => p.user).toSet();
+      
+      // Сначала сортируем по количеству уникальных пользователей (больше = выше)
+      int uniqueUserComparison = uniqueUsersB.length.compareTo(uniqueUsersA.length);
+      
+      // Если количество уникальных пользователей одинаково, сортируем по дате новейшего поста
+      if (uniqueUserComparison == 0) {
+        final latestPostA = a.value.reduce((curr, next) => 
+          curr.createdAt.isAfter(next.createdAt) ? curr : next);
+        final latestPostB = b.value.reduce((curr, next) => 
+          curr.createdAt.isAfter(next.createdAt) ? curr : next);
+        return latestPostB.createdAt.compareTo(latestPostA.createdAt);
+      }
+      
+      return uniqueUserComparison;
+    });
+    
+    // Создаем список отображаемых виджетов
+    final List<Widget> feedItems = [];
+    AppLogger.log('⭐⭐⭐ СОЗДАЕМ ВИДЖЕТЫ ДЛЯ ОТОБРАЖЕНИЯ ПОСТОВ ⭐⭐⭐');
+
+    for (var entry in sortedLocationEntries) {
+      final postsInLocation = entry.value;
+
+      if (postsInLocation.length > 1) {
+        // Если больше одного поста в локации, используем LocationPostsViewer
+        AppLogger.log('🎮🎮🎮 Creating LocationPostsViewer for ${postsInLocation.length} posts at ${entry.key}');
+        AppLogger.log('📝📝📝 Post IDs: ${postsInLocation.map((p) => p.id).join(", ")} 📝📝📝');
+        AppLogger.log('⭐⭐⭐ СОЗДАЕМ ГРУППУ ПОСТОВ ДЛЯ СВАЙПА! Количество: ${postsInLocation.length}, Локация: ${entry.key} ⭐⭐⭐');
+        AppLogger.log('📍📍📍 Координаты постов: ${postsInLocation.map((p) => "${p.location.latitude},${p.location.longitude}").join(" | ")} 📍📍📍');
+        
+        // Добавляем элемент с LocationPostsViewer
+        feedItems.add(
+          FutureBuilder<Map<String, bool>>(
+            future: _getFollowingStatusForUsers(postsInLocation.map((p) => p.user).toSet().toList()),
+            builder: (context, snapshot) {
+              final followingUsers = snapshot.data ?? {};
+
+              return LocationPostsViewer(
+                initialPost: postsInLocation.first,
+                userProfileImage: _userProfileImage,
+                userFullName: _userFullName,
+                onShowCommentsModal: _showCommentsModal,
+                onShowOnMap: _showOnMap,
+                onEditPost: _editPost,
+                onDeletePost: _deletePost,
+                onLikePost: _likePost,
+                onFavoritePost: _favoritePost,
+                onFollowUser: _followUser,
+                followingUsers: followingUsers,
+                onImageTap: _openImageViewer,
+              );
+            },
+          ),
+        );
+      } else {
+        // Если только один пост, используем обычную PostCard
+        final post = postsInLocation.first;
+        AppLogger.log('🔄 Creating regular PostCard for post ${post.id} at ${entry.key}');
+        
+        // Добавляем элемент с PostCard
+        feedItems.add(
+          FutureBuilder<Map<String, dynamic>>(
+            future: _getPostAuthorInfo(post),
+            builder: (context, authorSnapshot) {
+              final authorInfo = authorSnapshot.data ?? {'firstName': 'Loading...', 'lastName': '', 'profileImageUrl': ''};
+              final authorName = '${authorInfo['firstName']} ${authorInfo['lastName']}';
+              final authorProfileImage = authorInfo['profileImageUrl'] as String?;
+              
+              return FutureBuilder<bool>(
+                future: _checkIsFollowing(post.user),
+                builder: (context, snapshot) {
+                  final isFollowing = snapshot.data ?? false;
+
+                  return Container(
+                    margin: EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      // Добавляем подсветку, если это пост, который в данный момент выбран
+                      border: _lastViewedPostIndex == _posts.indexWhere((p) => p.id == post.id)
+                        ? Border.all(color: Colors.blue, width: 3)
+                        : null,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: _lastViewedPostIndex == _posts.indexWhere((p) => p.id == post.id)
+                        ? [
+                            BoxShadow(
+                              color: Colors.blue.withOpacity(0.3),
+                              blurRadius: 10,
+                              spreadRadius: 3,
+                            )
+                          ]
+                        : [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 5,
+                              spreadRadius: 1,
+                            )
+                          ],
+                    ),
+                    child: PostCard(
+                      post: post,
+                      userProfileImage: _userProfileImage,
+                      userFullName: _userFullName,
+                      authorProfileImage: authorProfileImage,
+                      authorName: authorName,
+                      onShowCommentsModal: _showCommentsModal,
+                      onShowOnMap: _showOnMap,
+                      onEditPost: _editPost,
+                      onDeletePost: _deletePost,
+                      isCurrentUserPost: _isCurrentUserPost(post),
+                      onLikePost: _likePost,
+                      onFavoritePost: _favoritePost,
+                      onFollowUser: _followUser,
+                      isFollowing: isFollowing,
+                      onImageTap: _openImageViewer,
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        );
+      }
+    }
+
+    AppLogger.log('🎉🎉🎉 ГОТОВО! Создано ${feedItems.length} элементов ленты 🎉🎉🎉');
+
+    // Отображаем элементы ленты в простом ListView с минимальными отступами
+    return ListView.separated(
+      controller: _feedScrollController,
+      physics: ClampingScrollPhysics(),
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      itemCount: feedItems.length,
+      separatorBuilder: (context, index) => SizedBox(height: 4),
+      itemBuilder: (context, index) {
+        return feedItems[index];
+      },
+    );
+  }
+
+  // Получаем статус подписки для нескольких пользователей
+  Future<Map<String, bool>> _getFollowingStatusForUsers(List<String> userIds) async {
+    final Map<String, bool> result = {};
+
+    for (var userId in userIds) {
+      try {
+        if (_userEmail == userId || _userId == userId || userId == 'current_user') {
+          result[userId] = false;
+        } else {
+          result[userId] = await SocialService.isFollowing(userId);
+        }
+      } catch (e) {
+        AppLogger.log("Error checking following status for $userId: $e");
+        result[userId] = false;
+      }
+    }
+
+    return result;
+  }
+
+  // Проверяем, является ли пост текущего пользователя
+  bool _isCurrentUserPost(Post post) {
+    // Проверяем наличие идентификаторов пользователя
+    if (_userEmail.isEmpty && _userId.isEmpty) {
+      AppLogger.log("❌ HomeTab _isCurrentUserPost: Нет доступных идентификаторов пользователя, возвращаем false");
+      return false;
+    }
+
+    // Сначала проверяем, совпадает ли пользователь поста с email текущего пользователя
+    if (post.user == _userEmail) {
+      return true;
+    }
+
+    // Если у нас есть числовой идентификатор пользователя, проверяем, совпадает ли post.user с ним
+    if (_userId.isNotEmpty && post.user == _userId) {
+      return true;
+    }
+
+    // Пытаемся проверить, является ли пользователь поста числовым ID
+    try {
+      final int? postUserId = int.tryParse(post.user);
+      final int? currentUserId = int.tryParse(_userId);
+
+      if (postUserId != null && currentUserId != null && postUserId == currentUserId) {
+        return true;
+      }
+    } catch (e) {
+      // Ошибка парсинга, может означать, что post.user не является числовым ID
+    }
+
+    // Наконец, проверяем специальные значения, которые могут представлять текущего пользователя
+    if (post.user == 'current_user' || post.user == 'null') {
+      return true;
+    }
+
+    return false;
+  }
+
+  // Проверяем, подписан ли пользователь на автора поста
+  Future<bool> _checkIsFollowing(String userId) async {
+    try {
+      if (_userEmail == userId || _userId == userId || userId == 'current_user') {
+        return false; // Нельзя подписаться на самого себя
+      }
+      return await SocialService.isFollowing(userId);
+    } catch (e) {
+      AppLogger.log("Error checking following status: $e");
+      return false;
+    }
+  }
+
+  // Обработчик лайка поста
+  Future<void> _likePost(Post post) async {
+    try {
+      final isLiked = await SocialService.isLiked(post.id);
+
+      if (isLiked) {
+        await SocialService.unlikePost(post.id);
+      } else {
+        await SocialService.likePost(post.id);
+      }
+
+      // Обновляем UI
+      setState(() {});
+    } catch (e) {
+      AppLogger.log("Error liking post: $e");
+    }
+  }
+
+  // Обработчик добавления/удаления из избранного
+  Future<void> _favoritePost(Post post) async {
+    try {
+      final isFavorite = await SocialService.isFavorite(post.id);
+
+      if (isFavorite) {
+        await SocialService.removeFromFavorites(post.id);
+      } else {
+        await SocialService.addToFavorites(post.id);
+      }
+
+      // Обновляем UI
+      setState(() {});
+    } catch (e) {
+      AppLogger.log("Error favoriting post: $e");
+    }
+  }
+
+  // Обработчик подписки на пользователя
+  Future<void> _followUser(String userId) async {
+    try {
+      // Проверяем, не пытается ли пользователь подписаться на самого себя
+      if (_userEmail == userId || _userId == userId || userId == 'current_user') {
+        AppLogger.log("Попытка подписаться на самого себя: $_userEmail/$_userId. Операция отменена.");
+        return;
+      }
+
+      final isFollowing = await SocialService.isFollowing(userId);
+
+      if (isFollowing) {
+        await SocialService.unfollowUser(userId);
+      } else {
+        await SocialService.followUser(userId);
+      }
+
+      // Обновляем UI
+      setState(() {});
+    } catch (e) {
+      AppLogger.log("Error following user: $e");
+    }
+  }
+
+  // Метод для прокрутки к нужному посту в ленте
+  void _scrollToPostInFeed(Post post) {
+    // Находим индекс поста в списке
+    int postIndex = _posts.indexWhere((p) => p.id == post.id);
+
+    if (postIndex != -1 && _feedScrollController.hasClients) {
+      // Расчетная высота одного поста (примерно)
+      double approximatePostHeight = 350.0; // может потребоваться корректировка
+
+      // Прокручиваем к позиции поста
+      _feedScrollController.animateTo(
+        postIndex * approximatePostHeight,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+
+      // Анимируем подсветку поста после прокрутки
+      // (этот код можно будет реализовать позже)
+    }
+  }
+
+  // Открытие просмотрщика изображений на весь экран
+  void _openImageViewer(Post post, int initialIndex) {
+    AppLogger.log('⭐⭐⭐ HomeTab._openImageViewer ВЫЗВАН для поста ${post.id}, initialIndex=${initialIndex} ⭐⭐⭐');
+    AppLogger.log('🔍🔍🔍 POST LOCATION: ${post.locationName}, COORDINATES: ${post.location.latitude},${post.location.longitude} 🔍🔍🔍');
+
+    // Проверяем, что пост и изображения существуют
+    if (post == null || (post.imageUrls.isEmpty && post.images.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Нет доступных изображений для просмотра'))
+      );
+      return;
+    }
+
+    if (post.imageUrls.isNotEmpty) {
+      // Если есть URL изображений, открываем просмотрщик сетевых изображений
+      AppLogger.log('🔍 HomeTab: Opening NetworkImageViewerScreen for post ${post.id}');
+      AppLogger.log('📷📷📷 Открываем NetworkImageViewerScreen для поста ${post.id} с ${post.imageUrls.length} изображениями 📷📷📷');
+      AppLogger.log('📝📝📝 Первый URL изображения: ${post.imageUrls.first} 📝📝📝');
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => NetworkImageViewerScreen(
+            imageUrls: post.imageUrls,
+            initialIndex: initialIndex < post.imageUrls.length ? initialIndex : 0,
+            parentPost: post, // Передаем родительский пост для поддержки свайпа
+          ),
+        ),
+      );
+    } else if (post.images.isNotEmpty) {
+      // Если есть локальные изображения, открываем просмотрщик файлов
+      AppLogger.log('📱📱📱 Открываем ImageViewerScreen для локальных изображений поста ${post.id} 📱📱📱');
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageViewerScreen(
+            images: post.images,
+            initialIndex: initialIndex < post.images.length ? initialIndex : 0,
+          ),
+        ),
+      );
+    }
+  }
+
+  // Метод для отслеживания скролла в ленте и определения текущего видимого поста
+  void _onFeedScroll() {
+    if (!_feedScrollController.hasClients || _posts.isEmpty) return;
+
+    // Определяем текущую позицию скролла
+    final double scrollOffset = _feedScrollController.offset;
+
+    // Примерная высота поста (может потребоваться корректировка)
+    double approximatePostHeight = 350.0;
+
+    // Вычисляем примерный индекс видимого поста
+    int visiblePostIndex = (scrollOffset / approximatePostHeight).floor();
+
+    // Проверяем границы
+    if (visiblePostIndex < 0) visiblePostIndex = 0;
+    if (visiblePostIndex >= _posts.length) visiblePostIndex = _posts.length - 1;
+
+    // Сохраняем информацию о текущем видимом посте
+    _lastViewedPost = _posts[visiblePostIndex];
+    _lastViewedPostIndex = visiblePostIndex;
+  }
+
+  Map<String, List<Post>> _groupPostsByLocation(List<Post> posts) {
+    AppLogger.log('🔴🔴🔴 МЕТОД _groupPostsByLocation ВЫЗВАН С ${posts.length} ПОСТАМИ 🔴🔴🔴');
+    AppLogger.log('🔍 Группируем посты по локациям...');
+    final Map<String, List<Post>> postsByLocation = {};
+
+    // Сначала группируем посты по имени локации
+    for (var post in posts) {
+      final locationName = post.locationName.toLowerCase();
+
+      if (postsByLocation.containsKey(locationName)) {
+        postsByLocation[locationName]!.add(post);
+      } else {
+        postsByLocation[locationName] = [post];
+      }
+    }
+
+    AppLogger.log('🔄 Grouped posts into ${postsByLocation.length} locations');
+    AppLogger.log('🔴🔴🔴 ИТОГИ ГРУППИРОВКИ ПОСТОВ 🔴🔴🔴');
+    postsByLocation.forEach((key, posts) {
+      AppLogger.log('📍📍📍 Location $key has ${posts.length} posts: ${posts.map((p) => p.id).join(", ")} 📍📍📍');
+
+      // Добавляем информацию о расстоянии между постами в одной локации
+      if (posts.length > 1) {
+        AppLogger.log('🌍🌍🌍 РАССТОЯНИЯ МЕЖДУ ПОСТАМИ В ЛОКАЦИИ "$key" 🌍🌍🌍');
+        for (int i = 0; i < posts.length; i++) {
+          for (int j = i + 1; j < posts.length; j++) {
+            final distance = _calculateDistanceBetweenPosts(posts[i], posts[j]);
+            AppLogger.log('🔢 Расстояние между постами ${posts[i].id} и ${posts[j].id}: ${distance.toStringAsFixed(2)} метров');
+          }
+        }
+      }
+    });
+
+    // Сортируем локации по дате создания самого нового поста
+    final List<MapEntry<String, List<Post>>> sortedLocationEntries = postsByLocation.entries.toList();
+    sortedLocationEntries.sort((a, b) {
+      final latestPostA = a.value.reduce((curr, next) =>
+      curr.createdAt.isAfter(next.createdAt) ? curr : next);
+      final latestPostB = b.value.reduce((curr, next) =>
+      curr.createdAt.isAfter(next.createdAt) ? curr : next);
+      return latestPostB.createdAt.compareTo(latestPostA.createdAt);
+    });
+
+    return postsByLocation;
+  }
+
+  // Вспомогательный метод для расчета расстояния между постами
+  double _calculateDistanceBetweenPosts(Post post1, Post post2) {
+    return _calculateDistance(
+        post1.location.latitude, post1.location.longitude,
+        post2.location.latitude, post2.location.longitude
+    );
+  }
+
+  // Вспомогательный метод для расчета расстояния между координатами в метрах
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    const int earthRadius = 6371000; // радиус Земли в метрах
+
+    // Перевод градусов в радианы
+    final double phi1 = lat1 * 3.14159265359 / 180;
+    final double phi2 = lat2 * 3.14159265359 / 180;
+    final double deltaPhi = (lat2 - lat1) * 3.14159265359 / 180;
+    final double deltaLambda = (lon2 - lon1) * 3.14159265359 / 180;
+
+    // Формула гаверсинусов
+    final double a = sin(deltaPhi / 2) * sin(deltaPhi / 2) +
+        cos(phi1) * cos(phi2) *
+            sin(deltaLambda / 2) * sin(deltaLambda / 2);
+    final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+
+    return earthRadius * c; // Расстояние в метрах
+  }
+
+  // Reload markers with current filter settings
+  Future<void> _reloadMarkers() async {
+    if (_mapboxMap == null) {
+      AppLogger.log("Can't reload markers: map is null");
+      return;
+    }
+    
+    if (!_isMapLoaded) {
+      AppLogger.log("Can't reload markers: map is not loaded");
+      return;
+    }
+    
+    AppLogger.log("Reloading markers with filter: showOnlyFavorites=$_showOnlyFavorites");
+    
+    setState(() {
+      _markersLoading = true;
+    });
+    
+    try {
+      // Создаем новый менеджер аннотаций (вместо очистки)
+      final annotations = await _mapboxMap!.annotations;
+      
+      // В версии Mapbox 2.6.2 нет метода removeOnPointAnnotationClickListener,
+      // поэтому просто создаем новый менеджер, что автоматически отвяжет старый
+      _pointAnnotationManager = null;
+      
+      // Создаем новый менеджер аннотаций
+      _pointAnnotationManager = await annotations.createPointAnnotationManager();
+      _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+      
+      // Очищаем карту маркеров
+      _markerPostMap = {};
+      
+      // Apply filters based on current settings
+      List<Post> filteredPosts = List.from(_posts); // Create a copy
+      
+      // Filter posts to only show favorites if needed
+      if (_showOnlyFavorites) {
+        AppLogger.log("Getting favorite posts for filtering...");
+        // Get favorite posts
+        final favoritePosts = await SocialService.getFavoritePosts();
+        AppLogger.log("Got ${favoritePosts.length} favorite posts");
+        
+        final favoriteIds = favoritePosts.map((post) => post.id).toSet();
+        AppLogger.log("Favorite IDs: $favoriteIds");
+        
+        // Filter the posts
+        filteredPosts = filteredPosts.where((post) => favoriteIds.contains(post.id)).toList();
+        
+        AppLogger.log("Filtered to ${filteredPosts.length} favorite posts from ${_posts.length} total posts");
+        
+        // Выводим ID отфильтрованных постов для отладки
+        for (var post in filteredPosts) {
+          AppLogger.log("Filtered post ID: ${post.id}");
+        }
+      }
+      
+      // Add filtered markers to the map
+      if (filteredPosts.isEmpty) {
+        AppLogger.log("No posts to display after filtering");
+      } else {
+        await _addPostMarkersToMap(filteredPosts);
+      }
+      
+      setState(() {
+        _markersLoading = false;
+      });
+    } catch (e) {
+      AppLogger.log("Error reloading markers: $e");
+      setState(() {
+        _markersLoading = false;
+        _error = e.toString();
+      });
+    }
+  }
+  
+  // Обработчик изменения фильтра
+  void _handleFilterChange(bool showOnlyFavorites) {
+    AppLogger.log("Filter changed: showOnlyFavorites=$showOnlyFavorites");
+    
+    setState(() {
+      _showOnlyFavorites = showOnlyFavorites;
+      
+      // Если включен фильтр избранных, переключаемся на вид карты
+      if (showOnlyFavorites && _activeView != 'map') {
+        _activeView = 'map';
+      }
+    });
+    
+    // Перезагружаем маркеры на карте только если карта уже загружена
+    if (_isMapLoaded) {
+      Future.microtask(() => _reloadMarkers());
+    }
+  }
+  
+  // ... existing code ...
+  
+  // Метод для добавления всех маркеров постов на карту
+  Future<void> _addPostMarkersToMap(List<Post> posts) async {
+    if (_mapboxMap == null) {
+      AppLogger.log("Can't add markers: map is null");
+      return;
+    }
+    
+    // Инициализируем менеджер аннотаций, если он еще не создан
+    if (_pointAnnotationManager == null) {
+      try {
+        final annotations = await _mapboxMap!.annotations;
+        _pointAnnotationManager = await annotations.createPointAnnotationManager();
+        AppLogger.log("Created new point annotation manager for markers");
+      } catch (e) {
+        AppLogger.log("Error creating point annotation manager: $e");
+        return;
+      }
+    }
+    
+    try {
+      int markersAdded = 0;
+      
+      // Проходим по всем постам и создаем маркеры только для тех, у которых есть геолокация
+      for (final post in posts) {
+        // Пропускаем посты без местоположения
+        if (post.location == null || 
+            (post.location.latitude == 0 && post.location.longitude == 0)) {
+          AppLogger.log("Skipping post ${post.id} - no valid location");
+          continue;
+        }
+        
+        AppLogger.log("Creating marker for post ${post.id} at ${post.location.latitude},${post.location.longitude}");
+        
+        // Настройки маркера
+        String markerImageId = "marker-15"; // Используем стандартный маркер по умолчанию
+        double iconSize = 0.3; // Стандартный размер (уменьшен в 2 раза)
+        bool hasImage = false;
+        
+        // Если у поста есть изображения, используем одно из них для маркера
+        if (post.imageUrls.isNotEmpty) {
+          try {
+            // ВАЖНО: проверяем, есть ли изображение в кэше по ID
+            final String cacheId = "post-marker-${post.id}";
+            
+            if (MapboxConfig.markerImageBytesCache.containsKey(cacheId)) {
+              AppLogger.log("✅ Using cached image for marker: $cacheId");
+              hasImage = true;
+              markerImageId = cacheId;
+            } else {
+              // Берем первое доступное изображение
+              String imageUrl = post.imageUrls.first;
+              
+              // При необходимости корректируем URL
+              if (!imageUrl.startsWith("http")) {
+                if (imageUrl.startsWith("/")) {
+                  imageUrl = imageUrl.substring(1);
+                }
+                imageUrl = "${ApiConfig.baseUrl}/${imageUrl}";
+              }
+              
+              AppLogger.log("Using image URL: $imageUrl");
+              final http.Response response = await http.get(Uri.parse(imageUrl));
+              
+              if (response.statusCode == 200) {
+                final Uint8List imageBytes = response.bodyBytes;
+                
+                // Регистрируем изображение как маркер
+                markerImageId = await MapboxConfig.registerPostImageAsMarker(
+                  _mapboxMap!,
+                  imageBytes,
+                  post.id
+                );
+                
+                hasImage = true;
+              } else {
+                AppLogger.log("Failed to load image from URL: ${response.statusCode}");
+              }
+            }
+          } catch (e) {
+            AppLogger.log("Error loading image for marker: $e");
+            // Продолжаем с стандартным маркером
+          }
+        }
+        
+        try {
+          // Создаем опции для маркера
+          final PointAnnotationOptions options = PointAnnotationOptions(
+            geometry: Point(
+              coordinates: Position(
+                post.location.longitude,
+                post.location.latitude,
+              ),
+            ),
+            iconImage: hasImage ? markerImageId : "marker-15", // Используем ID зарегистрированного изображения или стандартный маркер
+            iconSize: iconSize,
+            iconAnchor: IconAnchor.BOTTOM,
+            textField: post.locationName,
+            textSize: 12.0,
+            textOffset: [0.0, 2.0],
+            textColor: Colors.black.value,
+            textHaloColor: Colors.white.value,
+            textHaloWidth: 2.0,
+            iconOffset: [0.0, 0.0],
+            symbolSortKey: 1.0,
+            iconOpacity: 1.0,
+          );
+          
+          // Добавляем маркер на карту
+          final annotation = await _pointAnnotationManager?.create(options);
+          if (annotation != null) {
+            _markerPostMap[annotation.id] = post;
+            markersAdded++;
+            AppLogger.log("Added marker with ID: ${annotation.id} for post ${post.id}");
+          } else {
+            AppLogger.log("Failed to create marker for post ${post.id}");
+          }
+        } catch (e) {
+          AppLogger.log("Ошибка при создании маркера для поста ${post.id}: $e");
+          // Продолжаем с следующим постом
+          continue;
+        }
+      }
+      
+      AppLogger.log("Добавлено $markersAdded маркеров из ${posts.length} постов");
+    } catch (e) {
+      AppLogger.log("Ошибка при добавлении маркеров постов на карту: $e");
+    }
+  }
+  
+  // Метод для очистки всех маркеров с карты
+  Future<void> _clearAllMarkers() async {
+    if (_pointAnnotationManager == null) {
+      AppLogger.log("Невозможно очистить маркеры: менеджер аннотаций не инициализирован");
+      return;
+    }
+    
+    try {
+      // Предварительно очищаем карту маркеров
+      _markerPostMap = {};
+      
+      // Безопасная проверка перед удалением
+      final annotations = await _mapboxMap?.annotations;
+      if (annotations == null) {
+        AppLogger.log("Невозможно получить доступ к аннотациям карты");
+        return;
+      }
+      
+      // Вместо удаления всех маркеров через deleteAll(), создаем новый менеджер
+      _pointAnnotationManager = await annotations.createPointAnnotationManager();
+      _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+      
+      AppLogger.log("Маркеры успешно очищены");
+    } catch (e) {
+      AppLogger.log("Ошибка при очистке маркеров: $e");
+    }
+  }
+
+  // Загружаем сохраненные настройки камеры из SharedPreferences
+  Future<void> _loadSavedCameraOptions() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Получаем сохраненные значения
+      final double? savedZoom = prefs.getDouble('camera_zoom');
+      final double? savedLat = prefs.getDouble('camera_lat');
+      final double? savedLng = prefs.getDouble('camera_lng');
+
+      // Если есть сохраненные значения, создаем CameraOptions
+      if (savedZoom != null && savedLat != null && savedLng != null) {
+        _lastCameraOptions = CameraOptions(
+          center: Point(
+            coordinates: Position(savedLng, savedLat),
+          ),
+          zoom: savedZoom,
+        );
+        AppLogger.log("Загружены сохраненные настройки камеры: center=$savedLng,$savedLat zoom=$savedZoom");
+      } else {
+        AppLogger.log("Нет сохраненных настроек камеры");
+      }
+    } catch (e) {
+      AppLogger.log("Ошибка при загрузке настроек камеры: $e");
+    }
+  }
+
+  // Сохраняем настройки камеры в SharedPreferences
+  Future<void> _saveCameraOptions() async {
+    if (_lastCameraOptions == null) return;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Получаем значения из CameraOptions
+      final double zoom = _lastCameraOptions!.zoom ?? 12.0;
+      final double lat = (_lastCameraOptions!.center?.coordinates.lat ?? 0.0).toDouble();
+      final double lng = (_lastCameraOptions!.center?.coordinates.lng ?? 0.0).toDouble();
+
+      // Сохраняем значения
+      await prefs.setDouble('camera_zoom', zoom);
+      await prefs.setDouble('camera_lat', lat);
+      await prefs.setDouble('camera_lng', lng);
+
+      AppLogger.log("Настройки камеры сохранены: center=$lng,$lat zoom=$zoom");
+    } catch (e) {
+      AppLogger.log("Ошибка при сохранении настроек камеры: $e");
+    }
+  }
+
+  // Вспомогательный метод для обновления настроек камеры
+  Future<void> _updateCameraOptions() async {
+    try {
+    if (_mapboxMap != null) {
+        final CameraState cameraState = await _mapboxMap!.getCameraState();
+
+        // Только обновляем настройки, если они действительно изменились
+        final newZoom = cameraState.zoom;
+        final oldZoom = _lastCameraOptions?.zoom;
+
+        if (_lastCameraOptions == null ||
+            newZoom != oldZoom ||
+            cameraState.center != _lastCameraOptions?.center) {
+
+          _lastCameraOptions = CameraOptions(
+              center: cameraState.center,
+              zoom: cameraState.zoom,
+              bearing: cameraState.bearing,
+              pitch: cameraState.pitch
+          );
+
+          AppLogger.log("Обновлены настройки камеры: center=${cameraState.center.coordinates.lng},${cameraState.center.coordinates.lat} zoom=${newZoom}");
+
+          // Сохраняем обновленные настройки
+          _saveCameraOptions();
+        }
+      }
+    } catch (e) {
+      AppLogger.log("Ошибка при обновлении настроек камеры: $e");
+    }
+  }
+
+
+  // Modify the marker loading function to use the filtered posts
+  Future<void> _loadMarkersIfNeeded() async {
+    if (_mapboxMap == null || !_isMapLoaded || _markersLoading) {
+      AppLogger.log("Невозможно загрузить маркеры: карта не готова или загрузка уже идет");
+      return;
+    }
+    
+    // Проверяем флаг _showingSpecificPost
+    if (_showingSpecificPost) {
+      AppLogger.log("⚠️ Пропускаем загрузку маркеров, так как показывается конкретный пост");
+      return;
+    }
+    
+    setState(() {
+      _markersLoading = true;
+    });
+    
+    try {
+      // Проверяем состояние и создаем новый менеджер аннотаций, если необходимо
+      if (_pointAnnotationManager == null) {
+        final annotations = await _mapboxMap!.annotations;
+        _pointAnnotationManager = await annotations.createPointAnnotationManager();
+        _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+        AppLogger.log("PointAnnotationManager создан");
+      } else {
+        AppLogger.log("Используем существующий PointAnnotationManager");
+      }
+      
+      // Добавляем маркеры с учетом текущих настроек фильтрации
+      await _reloadMarkers();
+    } catch (e) {
+      AppLogger.log("Ошибка при загрузке маркеров: $e");
+      setState(() {
+        _markersLoading = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  // Метод для выделения кликнутого маркера
+  Future<void> _highlightClickedMarker(String markerId) async {
+    // Check locks and map state first
+    if (_isProcessingAnnotations) { /* ... log and return ... */ return; }
+    if (_mapboxMap == null || !_isMapLoaded) { /* ... log and return ... */ return; }
+
+    // Set lock
+    if (mounted) _isProcessingAnnotations = true;
+
+    // Find the target post using the current _markerPostMap *before* recreating the manager
+    final Post? targetPost = _markerPostMap[markerId]; 
+    if (targetPost == null) {
+        AppLogger.log("⚠️ Не найден пост для маркера с ID: $markerId (highlight)");
+        if (mounted) _isProcessingAnnotations = false; // Release lock
+        return;
+    }
+    // Keep a copy of the current markers map to rebuild from
+    final Map<String, Post> currentMarkerMapCopy = Map.from(_markerPostMap);
+
+    try {
+      AppLogger.log("🔍 Выделение маркера с ID: $markerId for post ${targetPost.id}");
+      
+      // --- Replace deleteAll with manager recreation ---
+      try {
+          AppLogger.log("🔄 Recreating annotation manager instead of deleteAll in _highlightClickedMarker");
+          final annotations = await _mapboxMap!.annotations;
+          _pointAnnotationManager = await annotations.createPointAnnotationManager();
+          // Re-add listener to the new manager
+          _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+          AppLogger.log("✅ New annotation manager created in _highlightClickedMarker");
+          _markerPostMap = {}; // Clear the Dart-side map, will rebuild below
+      } catch (e) {
+          AppLogger.log("❌ Error recreating annotation manager in _highlightClickedMarker: $e");
+          if (mounted) _isProcessingAnnotations = false; // Release lock on error
+          return; // Exit if we can't get a manager
+      }
+      // --- End of replacement ---
+      
+      // Создаем новую карту для обновленных соответствий маркеров и постов (not needed, cleared above)
+      // final Map<String, Post> newMarkerPostMap = {}; <--- Remove this line
+      int createdMarkers = 0;
+      
+      // Заново создаем все маркеры с учетом выделения, iterating over the *copy* of the old map
+      for (var entry in currentMarkerMapCopy.entries) {
+        final post = entry.value;
+        
+        // Создаем точку для маркера
+        final point = Point(
+          coordinates: Position(
+            post.location!.longitude, 
+            post.location!.latitude
+          )
+        );
+        
+        // Настройки маркера с учетом выделения
+        final bool isTarget = (post.id == targetPost.id);
+        if (isTarget) {
+          AppLogger.log("🎯 Создаем выделенный маркер для поста ${post.id}");
+        }
+        
+        final String markerImageId = "post-marker-${post.id}";
+        final bool hasImage = await _mapboxMap!.style.hasStyleImage(markerImageId);
+        
+        var options = PointAnnotationOptions(
+          geometry: point,
+          iconSize: isTarget ? 0.6 : 0.3, // Увеличенный размер для целевого маркера
+          iconImage: hasImage ? markerImageId : "marker-15", // Используем ID зарегистрированного изображения или стандартный маркер
+          textField: post.locationName,
+          textSize: isTarget ? 14.0 : 12.0, // Увеличенный размер текста для целевого маркера
+          textOffset: [0, 3.0],
+          textColor: 0xFF000000,
+          textHaloColor: 0xFFFFFFFF,
+          textHaloWidth: 2.0,
+          iconOffset: [0, 0],
+        );
+        
+        // Создаем маркер
+        try {
+        final annotation = await _pointAnnotationManager!.create(options);
+        
+        // Обновляем соответствие маркеров и постов
+        if (annotation != null) {
+            _markerPostMap[annotation.id] = post; // Add to the new map
+            createdMarkers++;
+          }
+        } catch (e) {
+          AppLogger.log("❌ Ошибка создания маркера для поста ${post.id}: $e");
+        }
+      }
+      
+      AppLogger.log("✅ Создано $createdMarkers маркеров после выделения");
+      
+      // Обновляем карту маркеров (already done by adding to _markerPostMap above)
+      // _markerPostMap = newMarkerPostMap; // <--- Remove this line
+      
+      // Добавляем обработчик для новых маркеров (already done when manager was recreated)
+      // _addMarkerClickListener(); // <--- Remove this line
+
+    } catch (e) {
+      AppLogger.log("❌ Ошибка при выделении кликнутого маркера: $e");
+    } finally {
+       // Release lock flag
+       if (mounted) {
+          _isProcessingAnnotations = false;
+       }
+       AppLogger.log("🏁 Завершение _highlightClickedMarker, флаг сброшен");
+    }
+  }
+
+  // Метод для сброса выделенного поста
+  void _resetHighlightedPost() {
+    if (_lastViewedPost != null) {
+      AppLogger.log("Сбрасываем выделение поста ${_lastViewedPost!.id}");
+      _lastViewedPost = null;
+      
+      // Устанавливаем флаг, чтобы предотвратить вмешательство других методов
+      _showingSpecificPost = false;
+      
+      // Перезагружаем маркеры без выделения
+      _loadPostMarkers();
+    }
+  }
+  
+  // Обработчик нажатия кнопки назад на странице карты
+  void _handleMapBackButton() {
+    _resetHighlightedPost();
+    setState(() {
+      _activeView = 'feed';
+    });
+  }
+
+  Widget _buildMapContent() {
+    AppLogger.log("🗺️ Построение карты, camerOptions: ${_lastCameraOptions?.zoom ?? 14.0}");
+    return Stack(
+      children: [
+        Container(
+          constraints: BoxConstraints.expand(),
+          child: MapWidget(
+            // Исправлено: правильный параметр для токена доступа
+            key: ValueKey("mapbox"),
+            styleUri: MapboxConfig.NAVIGATION_STYLE_URI,
+            cameraOptions: CameraOptions(
+              center: Point(
+                coordinates: Position(-122.084, 37.4219983)
+              ),
+              zoom: _lastCameraOptions?.zoom ?? 14.0
+            ),
+            onMapCreated: _onMapCreated,
+          ),
+        ),
+        // Панель загрузки, если карта или маркеры загружаются
+        if (_isMapLoading || _markersLoading) 
+          Center(
+            child: Container(
+              padding: EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.8),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 8),
+                  Text("Загрузка карты..."),
+                ],
+              ),
+            ),
+          ),
+        
+        // Индикатор ошибки, если есть ошибка
+        if (_error.isNotEmpty) 
+          Center(
+            child: Container(
+              margin: EdgeInsets.all(20),
+              padding: EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    spreadRadius: 1,
+                    blurRadius: 5,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red, size: 40),
+                  SizedBox(height: 10),
+                  Text(
+                    "Ошибка загрузки карты",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  SizedBox(height: 5),
+                  Text(_error, textAlign: TextAlign.center),
+                  SizedBox(height: 15),
+                  ElevatedButton(
+                    onPressed: () {
+                      _initializeMap();
+                    },
+                    child: Text("Попробовать снова"),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+        // Кнопка для перемещения к текущей локации
+        Positioned(
+          bottom: 16,
+          right: 16,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Если есть выделенный маркер, показываем кнопку для сброса выделения
+              // Временно скрываем кнопку сброса выделения
+              // if (_lastViewedPost != null)
+              //   Container(
+              //     margin: EdgeInsets.only(bottom: 8),
+              //     child: FloatingActionButton(
+              //       heroTag: "resetMarkerButton",
+              //       mini: true,
+              //       backgroundColor: Colors.blue,
+              //       onPressed: _resetHighlightedPost,
+              //       child: Icon(Icons.highlight_off, color: Colors.white),
+              //     ),
+              //   ),
+              FloatingActionButton(
+                heroTag: "locationButton",
+                backgroundColor: Colors.white,
+                onPressed: _moveToUserLocation,
+                child: Icon(Icons.my_location, color: Colors.blue),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+  
+  /// Перемещает камеру к текущему местоположению пользователя
+  void _moveToUserLocation() async {
+    if (_currentPosition != null && _mapboxMap != null) {
+      try {
+        AppLogger.log("📍 Перемещение к текущему местоположению пользователя");
+        
+        // Сохраняем текущее положение камеры перед перемещением
+        await _updateCameraOptions();
+        
+        // Перемещаем камеру к местоположению пользователя
+        await _mapboxMap!.flyTo(
+          CameraOptions(
+            center: Point(
+              coordinates: Position(
+                _currentPosition!.longitude,
+                _currentPosition!.latitude
+              )
+            ),
+            zoom: 14.0,
+          ),
+          MapAnimationOptions(duration: 1000)
+        );
+      } catch (e) {
+        AppLogger.log("❌ Ошибка перемещения к местоположению пользователя: $e");
+      }
+    } else {
+      AppLogger.log("⚠️ Не удалось определить местоположение пользователя");
+      
+      // Показываем снэкбар с сообщением
+            if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Не удалось определить ваше местоположение"),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  // Публичный метод для переключения между картой и лентой
+  void setActiveView(String view) {
+    if (view != _activeView) {
+      AppLogger.log('Переключение вида с $_activeView на $view');
+      
+      setState(() {
+        _activeView = view;
+      });
+      
+      // После переключения вида обрабатываем отложенные действия
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        // Если перешли на карту, перезагружаем маркеры
+        if (view == 'map' && _isMapLoaded) {
+          _reloadMarkers();
+        }
+        
+        // Если есть отложенные действия, обрабатываем их с небольшой задержкой
+        // чтобы гарантировать, что UI обновился и готов
+        if (_hasPendingAction) {
+          Future.delayed(Duration(milliseconds: 100), () {
+            _processPendingActions();
+          });
+        }
+      });
+    }
+  }
+  
+  // Публичный метод для перемещения камеры к указанной локации
+  Future<void> moveCameraToLocation(GeoLocation location) async {
+    if (_mapboxMap != null && _isMapLoaded) {
+      try {
+        AppLogger.log('Moving camera to location: ${location.latitude}, ${location.longitude}');
+        await _moveCamera(location);
+      } catch (e) {
+        AppLogger.log('Error moving camera: $e');
+      }
+    } else {
+      AppLogger.log('Map not loaded yet, cannot move camera');
+    }
+  }
+  
+  // Публичный метод для добавления маркера в указанной локации
+  Future<void> addMarkerAtLocation(GeoLocation location, String name) async {
+    if (_mapboxMap != null && _isMapLoaded && _pointAnnotationManager != null) {
+      try {
+        AppLogger.log('Adding marker at location: ${location.latitude}, ${location.longitude}');
+        
+        // Загружаем изображение маркера
+        final ByteData byteData = await rootBundle.load('assets/Images/map-marker.png');
+        final Uint8List bytes = byteData.buffer.asUint8List();
+        
+        // Создаем опции для маркера
+        final pointAnnotationOptions = PointAnnotationOptions(
+          geometry: Point(
+            coordinates: Position(
+              location.longitude,
+              location.latitude,
+            ),
+          ),
+          image: bytes,
+          iconSize: 0.5, // Уменьшаем размер маркера
+        );
+        
+        // Добавляем маркер на карту
+        final annotation = await _pointAnnotationManager!.create(pointAnnotationOptions);
+        
+        // Создаем временный пост для маркера
+        final post = Post(
+          id: 'search_${DateTime.now().millisecondsSinceEpoch}',
+          user: 'current_user',
+          description: 'Search result',
+          locationName: name,
+          location: location,
+          images: [],
+          createdAt: DateTime.now(),
+        );
+        
+        // Сохраняем маркер и связываем его с постом
+        _markerPostMap[annotation.id] = post;
+        
+        // Анимируем маркер
+        _animateMarker(annotation.id);
+      } catch (e) {
+        AppLogger.log('Error adding marker: $e');
+      }
+    } else {
+      AppLogger.log('Map not loaded yet, cannot add marker');
+    }
+  }
+  
+  // Публичный метод для перехода к указанному посту в ленте
+  void scrollToPost(Post post) {
+    if (_activeView != 'feed') {
+      setActiveView('feed');
+    }
+    
+    // Установка выбранного поста
+    setState(() {
+      _selectedPost = post;
+      _lastViewedPost = post;
+    });
+    
+    // Находим индекс поста в списке
+    int postIndex = _posts.indexWhere((p) => p.id == post.id);
+    
+    if (postIndex != -1 && _feedScrollController.hasClients) {
+      // Расчетная высота одного поста (примерно)
+      double approximatePostHeight = 350.0; // может потребоваться корректировка
+      
+      // Прокручиваем к позиции поста
+      _feedScrollController.animateTo(
+        postIndex * approximatePostHeight,
+        duration: Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+  
+  // Анимируем маркер, чтобы привлечь внимание
+  void _animateMarker(String markerId) {
+    // Добавляем визуальный эффект для выделения маркера
+    // Например, можно изменить его размер или цвет
+  }
+
+  @override
+  void setState(VoidCallback fn) {
+    if (mounted) {
+      super.setState(fn);
+      
+      // Обрабатываем отложенные действия после обновления состояния
+      if (_hasPendingAction) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _processPendingActions();
+        });
+      }
+    }
+  }
+
+  // Метод для добавления слоя с текущей локацией пользователя
+  void _addUserLocationLayer() {
+    if (_mapboxMap == null || _currentPosition == null) return;
+    
+    try {
+      AppLogger.log('Добавление слоя текущего местоположения пользователя: ${_currentPosition!.latitude}, ${_currentPosition!.longitude}');
+      
+      // Тут можно было бы добавить пульсирующую точку или специальный маркер
+      // для текущего местоположения пользователя, но для простоты просто
+      // используем существующий метод перемещения камеры
+      _moveCamera(_currentPosition!);
+    } catch (e) {
+      AppLogger.log('Ошибка при добавлении слоя местоположения пользователя: $e');
+    }
+  }
+
+  // Добавляем новый метод для плавного перемещения камеры с анимацией
+  Future<void> _flyToLocation(GeoLocation location) async {
+    if (_mapboxMap == null) {
+      AppLogger.log('❌ _flyToLocation: Карта не инициализирована');
+      return;
+    }
+    
+    if (!_isMapLoaded) {
+      AppLogger.log('❌ _flyToLocation: Карта не загружена');
+      return;
+    }
+    
+    AppLogger.log('🔄 _flyToLocation: Перемещение камеры к координатам ${location.latitude}, ${location.longitude}');
+    
+    try {
+      // Проверяем текущий стиль карты
+      bool styleLoaded = await _mapboxMap!.style.isStyleLoaded();
+      if (!styleLoaded) {
+        AppLogger.log('⚠️ _flyToLocation: Стиль карты не загружен, ожидание загрузки...');
+        // Ждем загрузки стиля
+        await Future.delayed(Duration(milliseconds: 500));
+      }
+      
+      // Получаем текущие настройки камеры
+      CameraState? currentCameraState;
+      try {
+        currentCameraState = await _mapboxMap!.getCameraState();
+        AppLogger.log('✅ _flyToLocation: Получены текущие настройки камеры: zoom=${currentCameraState.zoom}');
+      } catch (e) {
+        AppLogger.log('⚠️ _flyToLocation: Ошибка получения текущих настроек камеры: $e');
+      }
+      
+      // Используем сохраненный зум, текущий зум или значение по умолчанию
+      double zoom = currentCameraState?.zoom ?? _lastCameraOptions?.zoom ?? 14.0;
+      
+      // Создаем опции камеры
+      final cameraOptions = CameraOptions(
+        center: Point(
+          coordinates: Position(
+            location.longitude,
+            location.latitude
+          )
+        ),
+        zoom: zoom,
+        bearing: 0.0,
+        pitch: 0.0
+      );
+      
+      AppLogger.log('🔄 _flyToLocation: Применяем анимированное перемещение камеры с zoom=$zoom');
+      
+      // Применяем анимированное перемещение камеры
+      await _mapboxMap!.flyTo(
+        cameraOptions,
+        MapAnimationOptions(duration: 1500) // 1.5 секунды на анимацию
+      );
+      
+      // Добавляем небольшую задержку для завершения анимации
+      await Future.delayed(Duration(milliseconds: 100));
+      
+      // Сохраняем новые настройки камеры
+      _lastCameraOptions = cameraOptions;
+      
+      AppLogger.log('✅ _flyToLocation: Камера перемещена с анимацией к позиции: ${location.latitude}, ${location.longitude}, zoom: $zoom');
+    } catch (e) {
+      AppLogger.log('❌ _flyToLocation: Ошибка анимированного перемещения камеры: $e');
+      
+      // Если не удалось использовать анимацию, используем обычное перемещение
+      try {
+        AppLogger.log('🔄 _flyToLocation: Пробуем обычное перемещение камеры');
+        await _moveCamera(location);
+      } catch (e2) {
+        AppLogger.log('❌ _flyToLocation: Ошибка обычного перемещения камеры: $e2');
+      }
+    }
+  }
+
+  // Публичный метод для проверки наличия отложенных действий
+  bool hasPendingAction() {
+    return _hasPendingAction;
+  }
+  
+  // Публичный метод для обработки отложенных действий
+  void processPendingActions() {
+    AppLogger.log('🔄 Публичный вызов processPendingActions()');
+    _processPendingActions();
+  }
+
+  // Обработчик события отсутствующего изображения в стиле карты
+  void _onStyleImageMissing(StyleImageMissingEvent event) {
+    if (_mapboxMap == null) return;
+    
+    String imageId = event.id;
+    AppLogger.log("🔄 Style image missing event: $imageId");
+    
+    // Проверяем, является ли это изображение маркером
+    if (imageId.startsWith('post-marker-')) {
+      try {
+        // Извлекаем ID поста из ID изображения
+        String postId = imageId.replaceFirst('post-marker-', '');
+        AppLogger.log("🔍 Looking for cached marker image: $imageId (post ID: $postId)");
+        
+        // Проверяем наличие изображения в кэше
+        if (MapboxConfig.markerImageBytesCache.containsKey(imageId)) {
+          try {
+            // Получаем закэшированные данные
+            final imageBytes = MapboxConfig.markerImageBytesCache[imageId]!;
+            final width = MapboxConfig.markerImageSizeCache[imageId]?.width ?? 64;
+            final height = MapboxConfig.markerImageSizeCache[imageId]?.height ?? 64;
+            
+            // Создаем изображение и добавляем его в стиль
+            final mbxImage = MbxImage(
+              width: width,
+              height: height,
+              data: imageBytes,
+            );
+            
+            // Добавляем изображение в стиль карты
+            _mapboxMap!.style.addStyleImage(
+              imageId,
+              1.0,
+              mbxImage,
+              false,
+              [],
+              [],
+              null
+            );
+            
+            AppLogger.log("✅ Successfully restored cached marker image: $imageId");
+          } catch (e) {
+            AppLogger.log("❌ Error restoring cached marker image: $e");
+          }
+        } else {
+          // Если изображения нет в кэше, попробуем загрузить его
+          AppLogger.log("⚠️ No cached image found for $imageId, attempting to load it");
+          _loadMissingMarkerImage(postId, imageId);
+        }
+      } catch (e) {
+        AppLogger.log("❌ Error processing style image missing event: $e");
+      }
+    } else if (imageId == "marker-15" || imageId == "custom-marker") {
+      // Обработка стандартных маркеров
+      _loadDefaultMarkerImage(imageId);
+    }
+  }
+
+  // Загрузка недостающего изображения маркера
+  Future<void> _loadMissingMarkerImage(String postId, String imageId) async {
+    try {
+      AppLogger.log("🔄 Loading missing marker image for post: $postId");
+      
+      // Находим пост в текущем списке постов
+      Post? post;
+      try {
+        post = _posts.firstWhere((p) => p.id == postId);
+        AppLogger.log("✅ Found post in current list with ID: $postId");
+      } catch (e) {
+        AppLogger.log("⚠️ Post not found in current list, trying to load it: $postId");
+        post = null;
+      }
+      
+      // Если не нашли пост в списке, пытаемся загрузить его
+      if (post == null) {
+        try {
+          post = await PostService.getPostById(postId);
+          if (post != null) {
+            AppLogger.log("✅ Successfully loaded post with ID: $postId");
+          } else {
+            AppLogger.log("❌ Failed to load post with ID: $postId");
+            return;
+          }
+        } catch (e) {
+          AppLogger.log("❌ Error loading post by ID: $e");
+          return;
+        }
+      }
+      
+      // Если у поста есть изображения, используем первое из них
+      if (post.imageUrls.isNotEmpty) {
+        try {
+          String imageUrl = post.imageUrls.first;
+          
+          // Корректируем URL если нужно
+          if (!imageUrl.startsWith("http")) {
+            if (imageUrl.startsWith("/")) {
+              imageUrl = imageUrl.substring(1);
+            }
+            imageUrl = "${ApiConfig.baseUrl}/${imageUrl}";
+          }
+          
+          AppLogger.log("🔍 Loading image from URL: $imageUrl");
+          
+          // Загружаем изображение
+          final http.Response response = await http.get(Uri.parse(imageUrl));
+          
+          if (response.statusCode == 200 && _mapboxMap != null) {
+            final Uint8List imageBytes = response.bodyBytes;
+            
+            // Регистрируем изображение как маркер
+            await MapboxConfig.registerPostImageAsMarker(
+              _mapboxMap!,
+              imageBytes,
+              postId
+            );
+            
+            AppLogger.log("✅ Successfully loaded and registered marker image for post: $postId");
+          } else {
+            AppLogger.log("❌ Failed to load image, status: ${response.statusCode}");
+          }
+        } catch (e) {
+          AppLogger.log("❌ Error loading image for post: $e");
+        }
+      } else {
+        AppLogger.log("⚠️ Post has no images: $postId");
+      }
+    } catch (e) {
+      AppLogger.log("❌ General error in _loadMissingMarkerImage: $e");
+    }
+  }
+  
+  // Загрузка стандартного изображения маркера
+  Future<void> _loadDefaultMarkerImage(String imageId) async {
+    try {
+      AppLogger.log("🔄 Loading default marker image: $imageId");
+      
+      // Проверяем, уже зарегистрирован ли стандартный маркер
+      bool existsInStyle = false;
+      try {
+        existsInStyle = await _mapboxMap!.style.hasStyleImage(imageId);
+      } catch (e) {
+        AppLogger.log("⚠️ Error checking style image: $e");
+      }
+      
+      if (!existsInStyle) {
+        // Загружаем стандартные маркеры карты
+        try {
+          await MapboxConfig.registerMapboxMarkerImages(_mapboxMap!);
+          AppLogger.log("✅ Default markers registered successfully");
+        } catch (e) {
+          AppLogger.log("❌ Error registering default markers: $e");
+        }
+      } else {
+        AppLogger.log("✅ Default marker already exists in style: $imageId");
+      }
+    } catch (e) {
+      AppLogger.log("❌ Error in _loadDefaultMarkerImage: $e");
+    }
+  }
+} 

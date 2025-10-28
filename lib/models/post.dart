@@ -1,23 +1,32 @@
 import 'dart:io';
+import 'dart:convert';
 import 'location.dart';
 
 class Post {
   final String id;
-  final List<File> images;
-  final GeoLocation location;
-  final String locationName;
-  final String description;
-  final DateTime createdAt;
   final String user;
+  final String title;
+  final String description;
+  final String locationName;
+  final GeoLocation location;
+  final List<File> images;
+  final List<String> imageUrls;
+  final List<String> originalImageUrls; // Original images for gallery view
+  final List<String> photoIds; // IDs of all photos in this post/location
+  final DateTime createdAt;
   
   Post({
     required this.id,
-    required this.images,
-    required this.location,
-    required this.locationName,
-    required this.description,
-    required this.createdAt,
     required this.user,
+    this.title = '',
+    required this.description,
+    required this.locationName,
+    required this.location,
+    required this.images,
+    this.imageUrls = const [],
+    this.originalImageUrls = const [],
+    this.photoIds = const [],
+    required this.createdAt,
   });
   
   // Метод для извлечения широты
@@ -36,28 +45,45 @@ class Post {
   Map<String, dynamic> toJson() {
     return {
       'id': id,
-      'location': location.toJson(),
-      'locationName': locationName,
-      'description': description,
-      'createdAt': createdAt.millisecondsSinceEpoch,
       'user': user,
-      // Для изображений понадобится отдельная логика загрузки на сервер
-      // Здесь мы только сохраняем пути к файлам
-      'imagePaths': images.map((file) => file.path).toList(),
+      'title': title,
+      'description': description,
+      'locationName': locationName,
+      'location': {
+        'latitude': location.latitude,
+        'longitude': location.longitude,
+      },
+      'imageUrls': imageUrls,
+      'originalImageUrls': originalImageUrls,
+      'photoIds': photoIds,
+      'createdAt': createdAt.toIso8601String(),
     };
   }
   
   factory Post.fromJson(Map<String, dynamic> json) {
+    final imageUrls = List<String>.from(json['imageUrls'] ?? []);
+    final originalImageUrls = json['originalImageUrls'] != null 
+        ? List<String>.from(json['originalImageUrls'])
+        : imageUrls; // Fallback to cropped if no originals
+    final photoIds = json['photoIds'] != null
+        ? List<String>.from(json['photoIds'])
+        : [json['id'].toString()]; // Fallback to main ID if no photoIds
+    
     return Post(
-      id: json['id'] as String,
-      images: (json['imagePaths'] as List<dynamic>)
-          .map((path) => File(path as String))
-          .toList(),
-      location: GeoLocation.fromJson(json['location'] as Map<String, dynamic>),
-      locationName: json['locationName'] as String,
-      description: json['description'] as String,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(json['createdAt'] as int),
-      user: json['user'] as String,
+      id: json['id'].toString(),
+      user: json['user'].toString(),
+      title: json['title'] ?? '',
+      description: json['description'] ?? '',
+      locationName: json['locationName'] ?? '',
+      location: GeoLocation(
+        latitude: json['location']['latitude'],
+        longitude: json['location']['longitude'],
+      ),
+      images: [],
+      imageUrls: imageUrls,
+      originalImageUrls: originalImageUrls,
+      photoIds: photoIds,
+      createdAt: DateTime.parse(json['createdAt']),
     );
   }
 } 

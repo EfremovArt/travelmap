@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-
+import '../utils/logger.dart';
 typedef PermissionCallback = void Function(bool isGranted);
 
 class PermissionsManager {
@@ -63,7 +63,7 @@ class PermissionsManager {
       onPermissionResult?.call(true);
       return true;
     } catch (e) {
-      print("Ошибка при проверке разрешений местоположения: $e");
+      AppLogger.log("Ошибка при проверке разрешений местоположения: $e");
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

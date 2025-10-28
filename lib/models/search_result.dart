@@ -26,15 +26,58 @@ class SearchResult {
     final String shortName = json['text'] ?? 'Unknown';
     final String address = _formatAddress(json);
     
+    // Определяем тип локации для лучшего отображения
+    final List<dynamic> placeTypes = json['place_type'] ?? [];
+    final String locationType = _getLocationType(placeTypes);
+    
+    // Формируем более информативное название
+    String displayName = shortName;
+    if (locationType.isNotEmpty) {
+      displayName = '$shortName ($locationType)';
+    }
+    
     return SearchResult(
-      name: shortName,
+      name: displayName,
       location: GeoLocation(
         latitude: lat,
         longitude: lng,
       ),
-      placeName: shortName,
+      placeName: fullName, // Используем полное название для placeName
       placeAddress: address.isEmpty ? fullName : address,
     );
+  }
+  
+  static String _getLocationType(List<dynamic> placeTypes) {
+    if (placeTypes.isEmpty) return '';
+    
+    // Mapping location types to English
+    final Map<String, String> typeMapping = {
+      'poi': 'Attraction',
+      'attraction': 'Attraction',
+      'museum': 'Museum',
+      'restaurant': 'Restaurant',
+      'hotel': 'Hotel',
+      'park': 'Park',
+      'airport': 'Airport',
+      'station': 'Station',
+      'place': 'Place',
+      'locality': 'Locality',
+      'neighborhood': 'Neighborhood',
+      'address': 'Address',
+      'country': 'Country',
+      'region': 'Region',
+      'district': 'District',
+      'postcode': 'Postcode',
+    };
+    
+    // Find first known type
+    for (final type in placeTypes) {
+      if (type is String && typeMapping.containsKey(type)) {
+        return typeMapping[type]!;
+      }
+    }
+    
+    return '';
   }
   
   static String _formatAddress(Map<String, dynamic> json) {

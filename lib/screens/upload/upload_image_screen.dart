@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'upload_location_screen.dart';
+import '../image_crop_screen.dart';
 
 class UploadImageScreen extends StatefulWidget {
   const UploadImageScreen({Key? key}) : super(key: key);
@@ -14,7 +17,31 @@ class UploadImageScreen extends StatefulWidget {
 
 class _UploadImageScreenState extends State<UploadImageScreen> {
   final List<File> _selectedImages = [];
+  File? _firstImageOriginal; // Сохраняем оригинал первого изображения
   bool _isLoading = false;
+
+  Future<File?> _cropImage(File imageFile) async {
+    try {
+      final imageBytes = await imageFile.readAsBytes();
+      
+      final croppedImage = await Navigator.push<Uint8List>(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageCropScreen(imageBytes: imageBytes),
+        ),
+      );
+
+      if (croppedImage != null) {
+        final tempDir = await getTemporaryDirectory();
+        final croppedFile = File('${tempDir.path}/cropped_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await croppedFile.writeAsBytes(croppedImage);
+        return croppedFile;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
 
   Future<void> _pickImage(ImageSource source) async {
     try {
@@ -27,18 +54,73 @@ class _UploadImageScreenState extends State<UploadImageScreen> {
       if (source == ImageSource.camera) {
         final pickedImage = await picker.pickImage(source: source);
         if (pickedImage != null) {
-          setState(() {
-            _selectedImages.add(File(pickedImage.path));
-          });
+          // Сохраняем оригинал перед обрезкой (если это первое фото)
+          final originalFile = File(pickedImage.path);
+          if (_selectedImages.isEmpty) {
+            // Копируем оригинал во временную директорию
+            final tempDir = await getTemporaryDirectory();
+            final originalCopy = File('${tempDir.path}/original_${DateTime.now().millisecondsSinceEpoch}.jpg');
+            await originalFile.copy(originalCopy.path);
+            _firstImageOriginal = originalCopy;
+            print('📸 Camera ORIGINAL IMAGE SAVED (copy): ${originalCopy.path}');
+          }
+          
+          // Открываем редактор масштабирования
+          final croppedFile = await _cropImage(originalFile);
+          if (croppedFile != null) {
+            setState(() {
+              _selectedImages.add(croppedFile);
+            });
+          } else {
+            // Если пользователь отменил обрезку, сбрасываем оригинал
+            if (_selectedImages.isEmpty) {
+              _firstImageOriginal = null;
+            }
+          }
         }
       } else {
         final pickedImages = await picker.pickMultiImage();
         if (pickedImages.isNotEmpty) {
-          setState(() {
-            _selectedImages.addAll(
-              pickedImages.map((image) => File(image.path)).toList()
-            );
-          });
+          // Обрабатываем изображения: первое через crop, остальные без изменений
+          List<File> processedImages = [];
+          
+          for (int i = 0; i < pickedImages.length; i++) {
+            final pickedImage = pickedImages[i];
+            
+            // Только первое изображение проходит через crop
+            if (_selectedImages.isEmpty && i == 0) {
+              final originalFile = File(pickedImage.path);
+              
+              // Копируем оригинал во временную директорию чтобы сохранить доступ к файлу
+              final tempDir = await getTemporaryDirectory();
+              final originalCopy = File('${tempDir.path}/original_${DateTime.now().millisecondsSinceEpoch}.jpg');
+              await originalFile.copy(originalCopy.path);
+              
+              // Сохраняем копию оригинала первого изображения
+              _firstImageOriginal = originalCopy;
+              print('📸 ORIGINAL IMAGE SAVED (copy): ${originalCopy.path}');
+              print('📸 File exists: ${await originalCopy.exists()}');
+              
+              final croppedFile = await _cropImage(originalFile);
+              if (croppedFile != null) {
+                processedImages.add(croppedFile);
+                print('✂️ CROPPED IMAGE: ${croppedFile.path}');
+              } else {
+                // Если пользователь отменил обрезку, сбрасываем оригинал
+                _firstImageOriginal = null;
+                print('❌ Crop cancelled, original reset');
+              }
+            } else {
+              // Остальные изображения добавляем в исходном размере
+              processedImages.add(File(pickedImage.path));
+            }
+          }
+          
+          if (processedImages.isNotEmpty) {
+            setState(() {
+              _selectedImages.addAll(processedImages);
+            });
+          }
         }
       }
     } catch (e) {
@@ -54,6 +136,11 @@ class _UploadImageScreenState extends State<UploadImageScreen> {
 
   void _removeImage(int index) {
     setState(() {
+      // Если удаляем первое изображение, сбрасываем оригинал
+      if (index == 0) {
+        _firstImageOriginal = null;
+        print('🗑️ Removed first image, clearing _firstImageOriginal');
+      }
       _selectedImages.removeAt(index);
     });
   }
@@ -108,6 +195,7 @@ class _UploadImageScreenState extends State<UploadImageScreen> {
                           MaterialPageRoute(
                             builder: (context) => UploadLocationScreen(
                               images: _selectedImages,
+                              firstImageOriginal: _firstImageOriginal,
                             ),
                           ),
                         )

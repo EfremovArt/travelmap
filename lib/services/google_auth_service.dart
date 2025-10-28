@@ -1,5 +1,5 @@
 import 'package:google_sign_in/google_sign_in.dart';
-
+import '../utils/logger.dart';
 class GoogleAuthService {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [
@@ -42,7 +42,7 @@ class GoogleAuthService {
         },
       };
     } catch (e) {
-      print('Ошибка при входе через Google: $e');
+      AppLogger.log('Ошибка при входе через Google: $e');
       return {
         'success': false,
         'error': 'Произошла ошибка при аутентификации Google: $e',
@@ -55,7 +55,7 @@ class GoogleAuthService {
     try {
       await _googleSignIn.signOut();
     } catch (e) {
-      print('Ошибка при выходе из аккаунта Google: $e');
+      AppLogger.log('Ошибка при выходе из аккаунта Google: $e');
       throw Exception('Не удалось выйти из аккаунта Google: $e');
     }
   }
@@ -65,7 +65,7 @@ class GoogleAuthService {
     try {
       return await _googleSignIn.isSignedIn();
     } catch (e) {
-      print('Ошибка при проверке статуса аутентификации: $e');
+      AppLogger.log('Ошибка при проверке статуса аутентификации: $e');
       return false;
     }
   }

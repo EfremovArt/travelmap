@@ -1,17 +1,15 @@
 import 'dart:io';
 import 'dart:ui';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:video_player/video_player.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-// Обновленный импорт - удаляем ссылку на MainScreen, так как она не нужна прямо здесь
-// Все переходы на MainScreen будут осуществляться через именованные маршруты
+import 'services/auth_service.dart';
+import '../utils/logger.dart';
 
-// Встроенная реализация GoogleAuthService прямо в файле loginscreen.dart
+// Built-in implementation of GoogleAuthService directly in the loginscreen.dart file
 class GoogleAuthService {
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: [
@@ -20,27 +18,27 @@ class GoogleAuthService {
     ],
   );
 
-  // Аутентификация через Google
+  // Authentication via Google
   Future<Map<String, dynamic>> signInWithGoogle() async {
     try {
-      // Попытка входа через Google
+      // Attempt to sign in via Google
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
 
-      // Если пользователь отменил вход или произошла ошибка
+      // If user canceled the sign-in or an error occurred
       if (googleUser == null) {
         return {
           'success': false,
-          'error': 'Авторизация отменена пользователем',
+          'error': 'Authentication canceled by user',
         };
       }
 
-      // Получаем данные аутентификации
+      // Get authentication data
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      // Создаем уникальный ID для пользователя (можно заменить на UUID если доступно)
+      // Create a unique ID for the user (can be replaced with UUID if available)
       final String userId = DateTime.now().millisecondsSinceEpoch.toString();
 
-      // Возвращаем данные пользователя
+      // Return user data
       return {
         'success': true,
         'userData': {
@@ -54,21 +52,21 @@ class GoogleAuthService {
         },
       };
     } catch (e) {
-      print('Ошибка при входе через Google: $e');
+      AppLogger.log('Error signing in with Google: $e');
       return {
         'success': false,
-        'error': 'Произошла ошибка при аутентификации Google: $e',
+        'error': 'An error occurred during Google authentication: $e',
       };
     }
   }
 
-  // Выход из аккаунта
+  // Sign out
   Future<void> signOut() async {
     try {
       await _googleSignIn.signOut();
     } catch (e) {
-      print('Ошибка при выходе из аккаунта Google: $e');
-      throw Exception('Не удалось выйти из аккаунта Google: $e');
+      AppLogger.log('Error signing out of Google account: $e');
+      throw Exception('Failed to sign out of Google account: $e');
     }
   }
 }
@@ -81,9 +79,6 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  VideoPlayerController? _controller;
-  bool _isVideoInitialized = false;
-  bool _isVideoError = false;
   bool _isLoading = false;
   bool _isEmulator = false;
   String _errorMessage = '';
@@ -92,20 +87,18 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    _checkEmulator().then((_) {
-      _initializeVideo();
-    });
+    _checkEmulator();
     _checkLoggedInUser();
   }
 
-  // Проверка, запущено ли приложение в эмуляторе
+  // Check if the application is running in an emulator
   Future<void> _checkEmulator() async {
     final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
 
     try {
       if (Platform.isAndroid) {
         final androidInfo = await deviceInfo.androidInfo;
-        // Большинство эмуляторов содержат "emulator" или "sdk" в имени модели или продукта
+        // Most emulators contain "emulator" or "sdk" in their model or product name
         _isEmulator = androidInfo.model.toLowerCase().contains('sdk') ||
             androidInfo.model.toLowerCase().contains('emulator') ||
             androidInfo.product.toLowerCase().contains('sdk') ||
@@ -113,68 +106,37 @@ class _LoginScreenState extends State<LoginScreen> {
             (androidInfo.fingerprint.toLowerCase().contains('generic') &&
                 androidInfo.fingerprint.toLowerCase().contains('android'));
 
-        print('Запущено в эмуляторе: $_isEmulator');
+        AppLogger.log('Running in emulator: $_isEmulator');
       } else if (Platform.isIOS) {
         final iosInfo = await deviceInfo.iosInfo;
-        // Для iOS симулятора
+        // For iOS simulator
         _isEmulator = !iosInfo.isPhysicalDevice;
-        print('Запущено в симуляторе: $_isEmulator');
+        AppLogger.log('Running in simulator: $_isEmulator');
       }
     } catch (e) {
-      print('Ошибка при определении эмулятора: $e');
+      AppLogger.log('Error determining emulator: $e');
       _isEmulator = false;
     }
   }
 
-  Future<void> _initializeVideo() async {
-    // Если мы в эмуляторе, не инициализируем видео вообще
-    if (_isEmulator) {
-      setState(() {
-        _isVideoError = true; // Это заставит использовать градиентный фон
-      });
-      return;
-    }
-
-    try {
-      _controller = VideoPlayerController.asset('assets/video/background.mp4');
-      await _controller!.initialize();
-      await _controller!.setLooping(true);
-      await _controller!.setVolume(0.0);
-      await _controller!.play();
-
-      if (mounted) {
-        setState(() {
-          _isVideoInitialized = true;
-        });
-      }
-    } catch (e) {
-      print('Ошибка при инициализации видео: $e');
-      if (mounted) {
-        setState(() {
-          _isVideoError = true;
-        });
-      }
-    }
-  }
-
-  // Проверка авторизованного пользователя
+  // Check logged-in user
   Future<void> _checkLoggedInUser() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getString('user_id');
-
-      if (userId != null) {
-        // Если есть сохраненный ID пользователя, переходим на главный экран с вкладками
+      final authService = AuthService();
+      final result = await authService.checkAuth();
+      
+      if (result['isAuthenticated'] == true) {
+        // If user is authenticated on the server, go to main screen
         if (mounted) {
-          Navigator.of(context).pushReplacementNamed('/main'); // Переходим на MainScreen
+          Navigator.of(context).pushReplacementNamed('/main');
         }
       }
     } catch (e) {
-      print('Ошибка при проверке авторизации: $e');
+      AppLogger.log('Error checking authentication: $e');
     }
   }
 
-  // Авторизация через Google
+  // Authentication via Google
   Future<void> _handleGoogleSignIn() async {
     setState(() {
       _isLoading = true;
@@ -182,270 +144,369 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final result = await _googleAuthService.signInWithGoogle();
+      final authService = AuthService();
+      AppLogger.log('Starting Google authentication process from LoginScreen');
+      final result = await authService.signInWithGoogle();
+
+      AppLogger.log('Google authentication result: $result');
 
       if (!mounted) return;
 
-      if (result['success']) {
-        final userData = result['userData'];
-
-        // Сохраняем данные пользователя
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('user_id', userData['userId']);
-        await prefs.setString('user_name', userData['userName']);
-        await prefs.setString('user_email', userData['email']);
-        await prefs.setString('access_type', userData['accessType']);
-
-        // Дополнительно сохраняем имя и email для профиля
-        final nameParts = userData['userName'].split(' ');
-        if (nameParts.isNotEmpty) {
-          await prefs.setString('firstName', nameParts[0]);
-        }
-        if (nameParts.length > 1) {
-          await prefs.setString('lastName', nameParts.sublist(1).join(' '));
-        }
-        await prefs.setString('email', userData['email']);
-        await prefs.setString('photoUrl', userData['photoUrl'] ?? '');
-
-        // Переходим на главный экран используя именованный маршрут
-        if (mounted) {
-          Navigator.of(context).pushNamedAndRemoveUntil('/main', (route) => false);
-        }
+      if (result['success'] == true) {
+        AppLogger.log('Successful Google authentication');
+        // Go to main screen
+        Navigator.of(context).pushNamedAndRemoveUntil('/main', (route) => false);
       } else {
+        String errorMsg = result['message'] ?? 'Error signing in with Google';
+        AppLogger.log('Error during authentication: $errorMsg');
+        
+        // Show more detailed error
         setState(() {
-          _errorMessage = result['error'] ?? 'Ошибка при входе через Google';
+          _errorMessage = errorMsg;
+          _isLoading = false;
         });
+        
+        // Show error dialog for better UX
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Authentication Error'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(errorMsg),
+                SizedBox(height: 10),
+                Text(
+                  'Check internet connection and try again.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('OK'),
+              ),
+            ],
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
+        AppLogger.log('Exception during authentication: $e');
         setState(() {
-          _errorMessage = 'Произошла ошибка: $e';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
+          _errorMessage = 'An unexpected error occurred: $e';
           _isLoading = false;
         });
+        
+        // Show error dialog
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Application Error'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('An unexpected error occurred:'),
+                SizedBox(height: 8),
+                Text(
+                  e.toString(),
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                SizedBox(height: 16),
+                Text(
+                  'Restart the application and try again.',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('OK'),
+              ),
+            ],
+          ),
+        );
       }
     }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
+    // _controller?.dispose(); // Удалено, т.к. больше не используем видео
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Получаем размер экрана
+    final screenSize = MediaQuery.of(context).size;
+    final screenWidth = screenSize.width;
+    final screenHeight = screenSize.height;
+    
+    // Базовый размер из дизайна
+    const baseWidth = 428.0;
+    const baseHeight = 926.0;
+    
+    // Коэффициенты масштабирования
+    final scaleX = screenWidth / baseWidth;
+    final scaleY = screenHeight / baseHeight;
+    final scale = scaleX < scaleY ? scaleX : scaleY;
+    
     return Scaffold(
+      backgroundColor: Colors.white,
       body: Stack(
         children: [
-          // Фон: видео или градиент
-          if (_isVideoInitialized && !_isVideoError && !_isEmulator && _controller != null)
-            SizedBox.expand(
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: _controller!.value.size.width,
-                  height: _controller!.value.size.height,
-                  child: VideoPlayer(_controller!),
-                ),
-              ),
-            )
-          else
-          // Градиентный фон для эмулятора или при ошибке видео
-            Container(
-              width: double.infinity,
-              height: double.infinity,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.blue.shade900,
-                    Colors.blue.shade700,
-                    Colors.blue.shade800,
-                  ],
-                ),
-              ),
-            ),
-
-          // Размытый эффект и затемнение (только если не эмулятор)
-          if (!_isEmulator)
-            BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-              child: Container(
-                color: Colors.black.withOpacity(0.5),
-              ),
-            )
-          else
-          // Простое затемнение для эмулятора
-            Container(
-              color: Colors.black.withOpacity(0.3),
-            ),
-
-          // Контент
-          SafeArea(
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Логотип и название
-                  Padding(
-                    padding: const EdgeInsets.only(top: 100),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        // Стилизованный логотип
-                        Container(
-                          width: 100,
-                          height: 100,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.blue.withOpacity(0.5),
-                                blurRadius: 20,
-                                spreadRadius: 5,
-                              ),
-                            ],
-                          ),
-                          child: const Center(
-                            child: Icon(
-                              Icons.explore_outlined,
-                              size: 60,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 30),
-                        ShaderMask(
-                          shaderCallback: (Rect bounds) {
-                            return LinearGradient(
-                              colors: [Colors.blue.shade300, Colors.white],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                            ).createShader(bounds);
-                          },
-                          child: Text(
-                            'TRAVEL MAP',
-                            style: GoogleFonts.montserrat(
-                              fontSize: 40,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                              letterSpacing: 3,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            'Исследуйте мир с нами',
-                            style: GoogleFonts.poppins(
-                              fontSize: 16,
-                              color: Colors.white.withOpacity(0.9),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // Кнопка входа и сообщение об ошибке
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 80),
-                    child: Column(
-                      children: [
-                        // Показываем индикатор загрузки или кнопку входа
-                        if (_isLoading)
-                          const SpinKitDoubleBounce(
-                            color: Colors.white,
-                            size: 50.0,
-                          )
-                        else
-                        // Исправленная кнопка входа через Google без проблем с пикселями
-                          ElevatedButton(
-                            onPressed: _handleGoogleSignIn,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white,
-                              foregroundColor: Colors.black,
-                              elevation: 3,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Image.asset(
-                                  'assets/Images/google_logo.png',
-                                  width: 24,
-                                  height: 24,
-                                ),
-                                const SizedBox(width: 12),
-                                Text(
-                                  'Войти с аккаунтом Google',
-                                  style: GoogleFonts.poppins(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                    color: Colors.black87,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-
-                        const SizedBox(height: 24),
-
-                        // Показываем сообщение об ошибке, если есть
-                        if (_errorMessage.isNotEmpty)
-                          Container(
-                            width: MediaQuery.of(context).size.width * 0.8,
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade800.withOpacity(0.6),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _errorMessage,
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontSize: 14,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-
-                        const SizedBox(height: 24),
-
-                        Text(
-                          'Требуется аккаунт Google для\nиспользования приложения',
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: Colors.white.withOpacity(0.7),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+          // Круглые изображения на фоне
+          _buildBackgroundCircle(
+            left: 36 * scaleX,
+            top: 113 * scaleY,
+            size: 103 * scale,
+            assetPath: 'assets/Images/1.png',
+          ),
+          _buildBackgroundCircle(
+            left: 276 * scaleX,
+            top: 97 * scaleY,
+            size: 76 * scale,
+            assetPath: 'assets/Images/2.png',
+          ),
+          _buildBackgroundCircle(
+            left: 359 * scaleX,
+            top: 207 * scaleY,
+            size: 122 * scale,
+            assetPath: 'assets/Images/3.png',
+          ),
+          _buildBackgroundCircle(
+            left: 322 * scaleX,
+            top: 552 * scaleY,
+            size: 169 * scale,
+            assetPath: 'assets/Images/4.png',
+          ),
+          _buildBackgroundCircle(
+            left: 27 * scaleX,
+            top: 627 * scaleY,
+            size: 72 * scale,
+            assetPath: 'assets/Images/5.png',
+          ),
+          
+          // Кольцо 6.png (бублик) - просто картинка БЕЗ масштабирования
+          Positioned(
+            left: (screenWidth - 250) / 2,
+            top: 320,
+            child: Image.asset(
+              'assets/Images/6.png',
             ),
           ),
-        ],
+          
+          // Белый прямоугольник (Rectangle 8)
+          Positioned(
+            left: 70 * scaleX,
+            top: 417 * scaleY,
+            child: Container(
+              width: 307 * scaleX,
+              height: 56 * scaleY,
+              color: Colors.white,
+            ),
+          ),
+          
+          // Картинка 7.png - по ширине круга (250px)
+          Positioned(
+            left: (screenWidth - 250) / 2,
+            top: 417 * scaleY,
+            child: Image.asset(
+              'assets/Images/7.png',
+              width: 250,
+              height: 56 * scaleY,
+            ),
+          ),
+
+          // Кнопки авторизации
+          Positioned(
+            left: 22 * scaleX,
+            top: 774 * scaleY,
+            child: _buildLoginButton(
+              width: 385 * scaleX,
+              height: 60 * scaleY,
+              scale: scale,
+              text: 'Log in via Apple',
+              onPressed: () {
+                // TODO: Implement Apple Sign In
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Apple Sign In coming soon')),
+                );
+              },
+              isApple: true,
+            ),
+          ),
+          
+          Positioned(
+            left: 22 * scaleX,
+            top: 842 * scaleY,
+            child: _buildLoginButton(
+              width: 385 * scaleX,
+              height: 60 * scaleY,
+              scale: scale,
+              text: 'Log in via Google',
+              onPressed: _isLoading ? null : _handleGoogleSignIn,
+              isApple: false,
+            ),
+          ),
+          
+          // Индикатор загрузки
+                          if (_isLoading)
+            Container(
+              color: Colors.black.withOpacity(0.3),
+              child: const Center(
+                child: SpinKitDoubleBounce(
+                              color: Colors.white,
+                              size: 50.0,
+                                ),
+                              ),
+                            ),
+
+          // Сообщение об ошибке
+          if (_errorMessage.isNotEmpty && !_isLoading)
+            Positioned(
+              left: 22 * scaleX,
+              right: 22 * scaleX,
+              bottom: 100 * scaleY,
+              child: Container(
+                padding: EdgeInsets.all(16 * scale),
+                              decoration: BoxDecoration(
+                  color: Colors.red.shade800.withOpacity(0.9),
+                  borderRadius: BorderRadius.circular(10 * scale),
+                                border: Border.all(
+                                  color: Colors.red.shade300,
+                                  width: 1,
+                                ),
+                                  ),
+                child: Row(
+                  children: [
+                    Expanded(
+                              child: Text(
+                                _errorMessage,
+                        style: TextStyle(
+                                  color: Colors.white,
+                          fontSize: 14 * scale,
+                          fontFamily: 'Gilroy',
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: Colors.white, size: 20 * scale),
+                      onPressed: () {
+                        setState(() {
+                          _errorMessage = '';
+                        });
+                      },
+                    ),
+                  ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+    );
+  }
+  
+  Widget _buildBackgroundCircle({
+    required double left,
+    required double top,
+    required double size,
+    required String assetPath,
+  }) {
+    return Positioned(
+      left: left,
+      top: top,
+      child: ClipOval(
+        child: Image.asset(
+          assetPath,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            AppLogger.log('❌ Error loading asset: $assetPath, error: $error');
+            return Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.grey[300],
+              ),
+              child: Icon(
+                Icons.image_not_supported,
+                size: size * 0.3,
+                color: Colors.grey[600],
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildLoginButton({
+    required double width,
+    required double height,
+    required double scale,
+    required String text,
+    required VoidCallback? onPressed,
+    required bool isApple,
+  }) {
+    return Container(
+      width: width,
+      height: height,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFF1F1F4),
+          foregroundColor: Colors.black,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10 * scale),
+          ),
+          padding: EdgeInsets.symmetric(
+            horizontal: 22 * scale,
+            vertical: 0,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              text,
+              style: TextStyle(
+                fontFamily: 'Gilroy',
+                fontWeight: FontWeight.w600,
+                fontSize: 16 * scale,
+                height: 18 / 16,
+                letterSpacing: -0.408 * scale,
+                color: Colors.black,
+              ),
+            ),
+            isApple 
+              ? Icon(
+                  Icons.apple,
+                  size: 24 * scale,
+                  color: Colors.black,
+                )
+              : Image.asset(
+                  'assets/Images/google_logo.png',
+                  width: 24 * scale,
+                  height: 24 * scale,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Icon(
+                      Icons.g_mobiledata,
+                      size: 24 * scale,
+                      color: Colors.black,
+                    );
+                  },
+                ),
+          ],
+        ),
       ),
     );
   }
