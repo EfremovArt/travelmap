@@ -118,78 +118,90 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
   // Отметка времени последнего клика по маркеру
   DateTime? _lastMarkerTapAt;
 
+  // Настройки размеров маркеров
+  static const double _markerNormalSize = 0.3;
+  static const double _markerHighlightSize = _markerNormalSize * 2;
+  static const Duration _markerTapSuppressionDuration = Duration(milliseconds: 150);
+  Timer? _mapTapSuppressionTimer;
+
   // Listener for marker clicks to avoid recreating it every time
   late final MyPointAnnotationClickListener _markerClickListener = MyPointAnnotationClickListener((annotation) {
+    Future.microtask(() => _handleMarkerTap(annotation));
+    return true;
+  });
+
+  Future<void> _handleMarkerTap(PointAnnotation annotation) async {
     final post = _markerPostMap[annotation.id];
     if (post == null) {
-      return true;
+      AppLogger.log('⚠️ Клик по маркеру, но пост не найден для annotation.id=${annotation.id}');
+      return;
     }
 
     // Коротко подавляем onTap карты, чтобы не сбрасывать выделение в этот же кадр
+    _mapTapSuppressionTimer?.cancel();
     _suppressMapTapReset = true;
-    Future.delayed(const Duration(milliseconds: 250), () {
+    _mapTapSuppressionTimer = Timer(_markerTapSuppressionDuration, () {
       _suppressMapTapReset = false;
     });
 
-
-    // Логика переключения по post.id, а не по ID аннотации (которая меняется при пересоздании)
-    // Фикс порядка событий: запоминаем время клика по маркеру
+    // Запоминаем время клика по маркеру (используется в других местах логики)
     _lastMarkerTapAt = DateTime.now();
-    if (_highlightedPostId == post.id && _markerClickStage == 1) {
-      final sourceView = _mapFilterService.sourceView;
 
-      // Сбросим стадию до перехода
-      _highlightedPostId = null;
-      _markerClickStage = 0;
-      // Поднимаем версию операций подсветки и выставляем флаг отмены,
-      // чтобы любые отложенные/тяжёлые действия немедленно завершились
+    // ВТОРОЙ клик на уже увеличенный маркер -> возврат в исходный раздел
+    if (_highlightedPostId == post.id && _markerClickStage == 1) {
+      AppLogger.log('🔙 Второй клик на выделенном маркере ${post.id}');
+      await _clearHighlightKeepMarkers();
       _cancelHighlightInProgress = true;
       _highlightOperationVersion++;
-
-      if (sourceView == 'favorites') {
-        if (mainScreenKey.currentState != null) {
-          mainScreenKey.currentState?.switchToTab(2);
-        }
-      } else if (sourceView == 'followings') {
-        // Сохраняем ID поста для прокрутки при возврате в followings
-        AppLogger.log('📌 Сохраняем ID поста для прокрутки в followings: ${post.id}');
-        _mapFilterService.setScrollToPostId(post.id);
-        if (mainScreenKey.currentState != null) {
-          // Вкладка followings — индекс 1
-          AppLogger.log('🔄 Переключаемся на вкладку followings (индекс 1)');
-          mainScreenKey.currentState?.switchToTab(1);
-        }
-      } else if (sourceView == 'profile') {
-        // Сохраняем ID поста для прокрутки при возврате в профиль
-        AppLogger.log('📌 Сохраняем ID поста для прокрутки: ${post.id}');
-        _mapFilterService.setScrollToPostId(post.id);
-        if (mainScreenKey.currentState != null) {
-          // Вкладка профиля (MyMapTab) — индекс 3
-          AppLogger.log('🔄 Переключаемся на вкладку профиля (индекс 3)');
-          mainScreenKey.currentState?.switchToTab(3);
-        }
-      } else {
-        setState(() {
-          _activeView = 'feed';
-        });
-        // ИСПРАВЛЕНИЕ: Вызываем сразу, т.к. теперь используем ScrollController вместо GlobalKey
-        _selectPostInGroupInFeed(post);
-      }
-
-      return true;
+      await _returnToSourceAfterMarkerTap(post);
+      return;
     }
 
-    // 2) Первый клик по маркеру или клик по другому маркеру -> выделить (увеличить)
-    _highlightedPostId = post.id;
-    _markerClickStage = 1;
-    // Сбрасываем флаг отмены для новой операции и фиксируем версию
+    // Первый клик или клик по другому маркеру -> выделяем (увеличиваем)
     _cancelHighlightInProgress = false;
     final int opVersion = ++_highlightOperationVersion;
-    // Выделяем маркер (пересоздание с увеличенным размером)
-    _highlightClickedMarker(post.id, opVersion: opVersion);
+    await _highlightClickedMarker(post.id, opVersion: opVersion);
+  }
 
-    return true; // событие обработано
-  });
+  Future<void> _returnToSourceAfterMarkerTap(Post post) async {
+    final sourceView = _mapFilterService.sourceView;
+
+    if (sourceView == 'favorites') {
+      AppLogger.log('🔄 Возвращаемся в Favorites к посту ${post.id}');
+      _mapFilterService.setScrollToPostId(post.id);
+      mainScreenKey.currentState?.switchToTab(2);
+      return;
+    }
+
+    if (sourceView == 'followings') {
+      AppLogger.log('🔄 Возвращаемся в Followings к посту ${post.id}');
+      _mapFilterService.setScrollToPostId(post.id);
+      mainScreenKey.currentState?.switchToTab(1);
+      return;
+    }
+
+    if (sourceView == 'profile') {
+      AppLogger.log('🔄 Возвращаемся в профиль к посту ${post.id}');
+      _mapFilterService.setScrollToPostId(post.id);
+      mainScreenKey.currentState?.switchToTab(3);
+      return;
+    }
+
+    if (!mounted) return;
+
+    _mapFilterService.setSourceView('feed');
+
+    setState(() {
+      _activeView = 'feed';
+      _showingSpecificPost = false;
+      _isProcessingAnnotations = false;
+    });
+
+    // Прокручиваем к посту в ленте после отрисовки
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _selectPostInGroupInFeed(post);
+    });
+  }
 
   // Добавляем переменную для хранения текущих настроек камеры
   CameraOptions? _lastCameraOptions;
@@ -610,18 +622,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       }
     }
 
-    // При возвращении на экран карты проверяем и восстанавливаем маркеры
-    if (_activeView == 'map' && _isMapLoaded && _mapboxMap != null && _posts.isNotEmpty) {
-       // Небольшая задержка для завершения lifecycle операций
-       Future.delayed(Duration(milliseconds: 500), () {
-         if (mounted && _activeView == 'map' && _isMapLoaded && _mapboxMap != null) {
-           // Принудительно пересоздаем менеджер аннотаций
-           _pointAnnotationManager = null;
-           _markerPostMap.clear();
-           _loadPostMarkers();
-         }
-       });
-    }
+    // Карта теперь остается в памяти через IndexedStack - не нужно пересоздавать маркеры
   }
 
   @override
@@ -725,6 +726,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     // Останавливаем таймеры
     _postsRefreshTimer?.cancel();
     _cameraMonitorTimer?.cancel();
+    _mapTapSuppressionTimer?.cancel();
     
     // Отписываемся от подписки на местоположение
     _locationSubscription?.cancel();
@@ -742,42 +744,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
   void didUpdateWidget(HomeTab oldWidget) {
     super.didUpdateWidget(oldWidget);
     
-    if (_mapboxMap != null && _isMapLoaded && _activeView == 'map') {
-      // Важно: сбрасываем флаг выделения маркера при переключении экранов
-      _showingSpecificPost = false;
-      _lastViewedPost = null;
-      
-      // Принудительное восстановление маркеров с небольшой задержкой
-      Future.delayed(Duration(milliseconds: 400), () async {
-        if (mounted && _activeView == 'map' && _isMapLoaded && _mapboxMap != null) {
-          try {
-            // Безопасно пересоздаем менеджер аннотаций вместо deleteAll
-            try {
-              final annotations = await _mapboxMap!.annotations;
-              _pointAnnotationManager = await annotations.createPointAnnotationManager();
-              _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
-              _markerPostMap.clear();
-            } catch (e) {
-              AppLogger.log('❌ didUpdateWidget: Ошибка создания менеджера аннотаций: $e');
-              _pointAnnotationManager = null;
-              _markerPostMap.clear();
-            }
-            
-            // Восстанавливаем изображения маркеров
-            await MapboxConfig.reinstallCachedMarkerImages(_mapboxMap!);
-            
-            // Загружаем маркеры
-            await _loadPostMarkers();
-          } catch (e) {
-            AppLogger.log('❌ didUpdateWidget: Ошибка восстановления маркеров: $e');
-            // Fallback - полная перезагрузка
-            _pointAnnotationManager = null;
-            _markerPostMap.clear();
-            await _loadPostMarkers();
-          }
-        }
-      });
-    }
+    // Карта теперь остается в памяти через IndexedStack - не нужно пересоздавать маркеры
   }
 
   /// Мягкое восстановление менеджера аннотаций при необходимости  
@@ -1131,10 +1098,6 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
 
   /// Loads all posts from PostService
   Future<void> _loadAllPosts() async {
-    // Add check for the flag
-    if (_showingSpecificPost) {
-      return;
-    }
     try {
       final posts = await PostService.getAllPosts();
 
@@ -1300,7 +1263,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
         ),
         zoom: 15.0, // Zoomed in close
         bearing: 0.0,
-        pitch: 30.0, // Tilt for dramatic effect
+        pitch: 0.0,
       );
 
       if (mounted && _mapboxMap != null) {
@@ -1580,21 +1543,28 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       body: Stack(
         children: [
           // Основной контент (карта или список)
+          // Используем IndexedStack чтобы карта НЕ пересоздавалась при переключении
           Positioned.fill(
-            child: _activeView == 'map'
-                ? _buildMapView()
-                : _buildFeedView(),
+            child: IndexedStack(
+              index: _activeView == 'map' ? 0 : 1,
+              children: [
+                _buildMapView(),
+                _buildFeedView(),
+              ],
+            ),
           ),
 
           // Переключатель видов (сдвоенные иконки внизу)
-          Positioned(
-            bottom: 25,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: _buildViewToggle(),
+          // Не показываем переключатель, если пользователь пришел из favorites или profile
+          if (_mapFilterService.sourceView != 'favorites' && _mapFilterService.sourceView != 'profile')
+            Positioned(
+              bottom: 25,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: _buildViewToggle(),
+              ),
             ),
-          ),
           
           // Кнопка геолокации в правом верхнем углу
           if (_activeView == 'map')
@@ -1757,21 +1727,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
           }
         });
         
-        // Если переключились на вид карты, принудительно пересоздаем маркеры (как при первоначальной загрузке)
-        if (view == 'map' && _isMapLoaded) {
-          // Используем небольшую задержку для полной перезагрузки
-          Future.delayed(Duration(milliseconds: 500), () {
-            if (mounted && _activeView == 'map' && _isMapLoaded && _mapboxMap != null) {
-              
-              // КРИТИЧНО: Принудительно пересоздаем менеджер аннотаций
-              _pointAnnotationManager = null;
-              _markerPostMap.clear();
-              
-              // Загружаем маркеры (создаст новый менеджер)
-              _loadPostMarkers();
-            }
-          });
-        }
+        // Карта теперь остается в памяти через IndexedStack - маркеры уже на карте
 
         // Если переключаемся на ленту и есть информация о последнем просмотренном посте,
         // то прокручиваем к нему
@@ -1841,18 +1797,18 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
                 onTapListener: (context) {
                   // Откладываем обработку тапа карты, чтобы дать шанс обработаться клику по маркеру
                   Future.delayed(const Duration(milliseconds: 220), () {
-                    // Не сбрасываем, если только что кликнули по маркеру или идёт обработка аннотаций
-                    if (_suppressMapTapReset || _isProcessingAnnotations) {
+                    // Не сбрасываем, если только что кликнули по маркеру
+                    if (_suppressMapTapReset) {
                       return;
                     }
                     // Если недавно был клик по маркеру — тоже игнорируем
                     if (_lastMarkerTapAt != null && DateTime.now().difference(_lastMarkerTapAt!) < const Duration(milliseconds: 300)) {
                       return;
                     }
-                    if (_isMapLoaded) {
-                      if (_highlightedPostId != null) {
-                        _clearHighlightKeepMarkers();
-                      }
+                    // Сбрасываем выделение маркера при клике на карту
+                    if (_isMapLoaded && _highlightedPostId != null) {
+                      AppLogger.log("🗺️ Клик по карте - сбрасываем выделение");
+                      _clearHighlightKeepMarkers();
                     }
                   });
                 },
@@ -1913,10 +1869,6 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
 
   /// Initialize map and related components
   Future<void> _initializeMap() async {
-    // Add check for the flag
-    if (_showingSpecificPost) {
-      return;
-    }
     if (!mounted) return;
     
     setState(() {
@@ -2245,7 +2197,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
           CameraOptions(
             center: point,
             zoom: currentZoom,
-            pitch: 30.0,
+            pitch: 0.0,
           ),
           MapAnimationOptions(duration: 1000),
         );
@@ -3343,15 +3295,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     }
     
     if (_isProcessingAnnotations) {
+      AppLogger.log("⚠️ _reloadMarkers: Уже идет обработка аннотаций, пропускаем");
       return;
     }
     
-    // Если сейчас показываем конкретный пост, не перезагружаем маркеры,
-    // чтобы не сбивать выделение и увеличенный маркер
-    if (_showingSpecificPost) {
-      return;
-    }
-    
+    AppLogger.log("🔄 _reloadMarkers: Начинаем перезагрузку маркеров");
     
     // Защита от одновременных вызовов
     _isProcessingAnnotations = true;
@@ -3361,32 +3309,35 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     });
     
     try {
-      // Пересоздаем менеджер аннотаций вместо deleteAll для стабильности
-      try {
-        // Безопасно удаляем предыдущий менеджер, чтобы очистить увеличенные/старые маркеры
-        if (_pointAnnotationManager != null) {
-          try {
-            await _mapboxMap!.annotations.removeAnnotationManager(_pointAnnotationManager!);
-          } catch (e) {
-            AppLogger.log("⚠️ Error removing previous annotation manager: $e");
-          } finally {
-            _pointAnnotationManager = null;
-          }
+      // НЕ пересоздаем manager, а просто удаляем все маркеры!
+      if (_pointAnnotationManager == null) {
+        // Создаем manager только если его еще нет
+        try {
+          final annotations = await _mapboxMap!.annotations;
+          _pointAnnotationManager = await annotations.createPointAnnotationManager();
+          _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
+          AppLogger.log("✅ Создан новый annotation manager");
+        } catch (e) {
+          AppLogger.log("❌ Error creating annotation manager: $e");
+          setState(() {
+            _markersLoading = false;
+          });
+          _isProcessingAnnotations = false;
+          return;
         }
-        final annotations = await _mapboxMap!.annotations;
-        _pointAnnotationManager = await annotations.createPointAnnotationManager();
-        _pointAnnotationManager!.addOnPointAnnotationClickListener(_markerClickListener);
-      } catch (e) {
-        AppLogger.log("❌ Error creating annotation manager: $e");
-        setState(() {
-          _markersLoading = false;
-        });
-        _isProcessingAnnotations = false;
-        return;
+      } else {
+        // Manager существует - просто удаляем все маркеры
+        try {
+          await _pointAnnotationManager!.deleteAll();
+          AppLogger.log("🗑️ Удалены все маркеры с существующего manager");
+        } catch (e) {
+          AppLogger.log("⚠️ Error deleting all markers: $e");
+        }
       }
       
-      // Очищаем карту маркеров
+      // Очищаем карты маркеров
       _markerPostMap = {};
+      _postIdToAnnotation.clear();
       
       // Применяем фильтры
       List<Post> filteredPosts = List.from(_posts);
@@ -3403,7 +3354,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       
       // Добавляем маркеры
       if (filteredPosts.isEmpty) {
+        AppLogger.log("📍 Нет постов для отображения на карте");
       } else {
+        AppLogger.log("📍 Добавляем ${filteredPosts.length} маркеров на карту");
         await _addPostMarkersToMap(filteredPosts);
       }
       
@@ -3479,20 +3432,33 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     
     AppLogger.log('   setState выполнен, _activeView теперь: $_activeView');
     
-    // Перемещаем камеру и сразу выделяем маркер без предварительной перезагрузки маркеров
+    // Перемещаем камеру и выделяем маркер
     if (_mapboxMap != null && _isMapLoaded && highlightedPost.location != null) {
       AppLogger.log('   ✅ Начинаем процесс выделения маркера для поста ${highlightedPost.id}');
-      Future.delayed(Duration(milliseconds: 400), () async {
+      Future.microtask(() async {
         try {
-          // 1) Сразу выделяем маркер (метод сам пересоздаст обычные и выделенный)
-          _cancelHighlightInProgress = false;
-          final int opVersion = ++_highlightOperationVersion;
-          AppLogger.log('   🔄 Вызываем _highlightClickedMarker для поста ${highlightedPost.id}, opVersion: $opVersion');
-          await _highlightClickedMarker(highlightedPost.id, opVersion: opVersion);
-
-          // 2) Перемещаем камеру к посту
+          // Ждем окончания загрузки маркеров И что нужный маркер создан
+          AppLogger.log('   ⏳ Ждем, пока маркер ${highlightedPost.id} будет создан...');
+          int waitAttempts = 0;
+          while (waitAttempts < 50) {
+            // Проверяем, что маркер с нужным postId существует в _postIdToAnnotation
+            if (!_isProcessingAnnotations && _postIdToAnnotation.containsKey(highlightedPost.id)) {
+              AppLogger.log('   ✅ Маркер ${highlightedPost.id} найден!');
+              break;
+            }
+            await Future.delayed(Duration(milliseconds: 100));
+            waitAttempts++;
+          }
+          
+          if (!_postIdToAnnotation.containsKey(highlightedPost.id)) {
+            AppLogger.log('   ⏱️ Таймаут: маркер ${highlightedPost.id} не найден');
+            AppLogger.log('   Доступные маркеры: ${_postIdToAnnotation.keys.toList()}');
+            return;
+          }
+          
+          // 1) Перемещаем камеру к посту
           final sourceView = _mapFilterService.sourceView;
-          final double zoomLevel = (sourceView == 'followings' || sourceView == 'profile') ? 1.5 : 15.0;
+          final double zoomLevel = (sourceView == 'followings' || sourceView == 'profile' || sourceView == 'favorites') ? 1.5 : 15.0;
           final cameraOptions = CameraOptions(
             center: Point(
               coordinates: Position(
@@ -3501,8 +3467,14 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
               ),
             ),
             zoom: zoomLevel,
+            pitch: 0.0,
           );
           await _mapboxMap!.setCamera(cameraOptions);
+          
+          // 2) Выделяем маркер (просто меняем размер, не пересоздаем!)
+          final int opVersion = ++_highlightOperationVersion;
+          await _highlightClickedMarker(highlightedPost.id, opVersion: opVersion);
+          
         } catch (e) {
           AppLogger.log("❌ Error in highlight flow: $e");
         }
@@ -3634,22 +3606,17 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     }
     
     try {
-      // Предварительно очищаем карту маркеров
+      // Удаляем ВСЕ маркеры с текущего manager'а, НО НЕ пересоздаем его
+      await _pointAnnotationManager!.deleteAll();
+      
+      // Очищаем внутренние карты
       _markerPostMap = {};
       _postIdToAnnotation.clear();
       
-      // Безопасная проверка перед удалением
-      final annotations = await _mapboxMap?.annotations;
-      if (annotations == null) {
-        return;
-      }
-      
-      // Вместо удаления всех маркеров через deleteAll(), создаем новый менеджер
-      _pointAnnotationManager = await annotations.createPointAnnotationManager();
-      _pointAnnotationManager?.addOnPointAnnotationClickListener(_markerClickListener);
+      AppLogger.log("✅ Все маркеры удалены, manager сохранен");
       
     } catch (e) {
-      AppLogger.log("Ошибка при очистке маркеров: $e");
+      AppLogger.log("❌ Ошибка при очистке маркеров: $e");
     }
   }
 
@@ -3738,10 +3705,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       return;
     }
     
-    // Проверяем флаг _showingSpecificPost
-    if (_showingSpecificPost) {
-      return;
-    }
+    AppLogger.log("🔄 _loadMarkersIfNeeded: Начинаем загрузку маркеров");
     
     setState(() {
       _markersLoading = true;
@@ -3767,18 +3731,114 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     }
   }
 
-  // Метод для выделения кликнутого маркера
-  Future<void> _highlightClickedMarker(String markerId, {required int opVersion}) async {
-    AppLogger.log("🔵 _highlightClickedMarker НАЧАЛО для markerId: $markerId, opVersion: $opVersion");
+  // НОВЫЙ ПРОСТОЙ метод для выделения маркера - просто меняем размер существующего
+  Future<void> _highlightClickedMarker(String postId, {required int opVersion}) async {
+    AppLogger.log("🔵 _highlightClickedMarker НАЧАЛО для postId: $postId, opVersion: $opVersion");
     
-    // Check locks and map state first
-    if (_isProcessingAnnotations) { 
-      AppLogger.log("⚠️ _isProcessingAnnotations = true, выход из _highlightClickedMarker");
+    if (_mapboxMap == null || !_isMapLoaded || _pointAnnotationManager == null) { 
+      AppLogger.log("⚠️ Карта не готова, выход");
       return; 
     }
+
+    if (_highlightedPostId == postId && _markerClickStage == 1 && !_cancelHighlightInProgress) {
+      AppLogger.log("ℹ️ Маркер $postId уже выделен, повторное выделение не требуется");
+      return;
+    }
+    
+    try {
+      // Сначала сбрасываем размер предыдущего выделенного маркера (если был)
+      if (_highlightedPostId != null && _highlightedPostId != postId) {
+        final prevAnnotation = _postIdToAnnotation[_highlightedPostId!];
+        if (prevAnnotation != null) {
+          AppLogger.log("📉 Уменьшаем предыдущий маркер: $_highlightedPostId до $_markerNormalSize");
+          prevAnnotation.iconSize = _markerNormalSize;
+          await _pointAnnotationManager!.update(prevAnnotation);
+        }
+      }
+      
+      // Увеличиваем новый маркер
+      final annotation = _postIdToAnnotation[postId];
+      if (annotation != null) {
+        AppLogger.log("📈 Увеличиваем маркер: $postId до размера $_markerHighlightSize");
+        annotation.iconSize = _markerHighlightSize;
+        await _pointAnnotationManager!.update(annotation);
+        
+        // Обновляем состояние
+        if (mounted) {
+          setState(() {
+            _highlightedPostId = postId;
+            _markerClickStage = 1;
+            _showingSpecificPost = true;
+          });
+        }
+        
+        AppLogger.log("✅ Маркер $postId успешно увеличен");
+      } else {
+        AppLogger.log("⚠️ Маркер для поста $postId не найден в _postIdToAnnotation");
+        AppLogger.log("   Доступные маркеры: ${_postIdToAnnotation.keys.toList()}");
+        if (mounted) {
+          setState(() {
+            if (_highlightedPostId == postId) {
+              _highlightedPostId = null;
+              _markerClickStage = 0;
+            }
+            _showingSpecificPost = false;
+          });
+        }
+      }
+      
+    } catch (e) {
+      AppLogger.log("❌ Ошибка при выделении маркера: $e");
+    }
+  }
+  
+  // Метод для сброса выделения маркера
+  Future<void> _clearHighlightKeepMarkers() async {
+    if (_highlightedPostId == null) return;
+    
+    AppLogger.log("🔄 Сбрасываем выделение маркера: $_highlightedPostId");
+    
+    final annotation = _postIdToAnnotation[_highlightedPostId!];
+    
+    if (annotation != null && _pointAnnotationManager != null) {
+      try {
+        annotation.iconSize = _markerNormalSize;
+        await _pointAnnotationManager!.update(annotation);
+      } catch (e) {
+        AppLogger.log("❌ Ошибка сброса выделения: $e");
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _highlightedPostId = null;
+        _markerClickStage = 0;
+        _showingSpecificPost = false;
+      });
+    }
+  }
+
+  // СТАРЫЙ сложный метод - оставляем для совместимости, но упрощаем
+  Future<void> _highlightClickedMarker_OLD(String markerId, {required int opVersion}) async {
+    AppLogger.log("🔵 _highlightClickedMarker_OLD НАЧАЛО для markerId: $markerId, opVersion: $opVersion");
+    
+    // Check map state first
     if (_mapboxMap == null || !_isMapLoaded) { 
       AppLogger.log("⚠️ _mapboxMap=$_mapboxMap, _isMapLoaded=$_isMapLoaded, выход из _highlightClickedMarker");
       return; 
+    }
+    
+    // Wait for other annotation operations to complete (with timeout)
+    int waitAttempts = 0;
+    while (_isProcessingAnnotations && waitAttempts < 50) {
+      AppLogger.log("⏳ Ждем освобождения _isProcessingAnnotations... (попытка $waitAttempts)");
+      await Future.delayed(Duration(milliseconds: 100));
+      waitAttempts++;
+    }
+    
+    if (_isProcessingAnnotations) {
+      AppLogger.log("⚠️ Таймаут ожидания _isProcessingAnnotations, принудительно сбрасываем флаг");
+      _isProcessingAnnotations = false;
     }
 
     AppLogger.log("✅ Проверки пройдены, устанавливаем lock");
@@ -3788,12 +3848,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
 
     AppLogger.log("🎯 _highlightClickedMarker вызван для markerId: $markerId");
 
-    // Фиксируем режим показа конкретного поста, чтобы избежать перерисовок
-    _showingSpecificPost = true;
-
     // Размеры маркеров: выделенный ровно в 2 раза больше обычного
     const double normalSize = 0.3;
     const double highlightedSize = normalSize * 2;
+    AppLogger.log("📏 Размеры маркеров: normalSize=$normalSize, highlightedSize=$highlightedSize");
 
     // ИСПРАВЛЕНИЕ: Ищем пост сначала в _posts, а не в _markerPostMap
     // так как _markerPostMap может быть пустым при первом переходе на карту
@@ -3878,8 +3936,11 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
         
         // Настройки маркера с учетом выделения
         final bool isTarget = (post.id == targetPost!.id);
+        AppLogger.log("🔍 Проверка маркера: post.id=${post.id}, targetPost.id=${targetPost!.id}, isTarget=$isTarget");
         if (isTarget) {
-          AppLogger.log("✨ Создаем увеличенный маркер для поста ${post.id}");
+          AppLogger.log("✨ Создаем увеличенный маркер для поста ${post.id} с размером $highlightedSize");
+        } else {
+          AppLogger.log("   Обычный маркер для поста ${post.id} с размером $normalSize");
         }
         
         final String markerImageId = "post-marker-${post.id}";
@@ -3918,9 +3979,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
         
         // Создаем маркер сразу с целевым размером, чтобы избежать сбоев обновления анимации
         try {
+        final double markerSize = isTarget ? highlightedSize : normalSize;
+        AppLogger.log("📌 Создаем маркер с размером: $markerSize (isTarget=$isTarget)");
+        
         final staged = PointAnnotationOptions(
           geometry: point,
-          iconSize: isTarget ? highlightedSize : normalSize,
+          iconSize: markerSize,
           iconImage: (await _mapboxMap!.style.hasStyleImage(markerImageId)) ? markerImageId : "custom-marker",
           iconAnchor: IconAnchor.BOTTOM,
           iconOffset: [0, 0],
@@ -3932,6 +3996,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
         }
         
         final annotation = await _pointAnnotationManager!.create(staged);
+        AppLogger.log("✅ Маркер создан: id=${annotation?.id}, iconSize=$markerSize");
         
         // Обновляем соответствие маркеров и постов
           if (annotation != null) {
@@ -3946,11 +4011,10 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       }
       
       
-      // Обновляем карту маркеров (already done by adding to _markerPostMap above)
-      // _markerPostMap = newMarkerPostMap; // <--- Remove this line
+      AppLogger.log("✅ Создано $createdMarkers маркеров");
       
-      // Добавляем обработчик для новых маркеров (already done when manager was recreated)
-      // _addMarkerClickListener(); // <--- Remove this line
+      // ВАЖНО: Устанавливаем флаг ПОСЛЕ создания маркеров, чтобы предотвратить их перезагрузку
+      _showingSpecificPost = true;
       
       // Устанавливаем состояние выделения для корректной работы логики кликов
       if (mounted && !_cancelHighlightInProgress && opVersion == _highlightOperationVersion) {
@@ -4178,10 +4242,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
       
       // После переключения вида обрабатываем отложенные действия
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        // Если перешли на карту, перезагружаем маркеры
-        if (view == 'map' && _isMapLoaded) {
-          _reloadMarkers();
-        }
+        // Карта остается в памяти через IndexedStack - маркеры уже на карте
         
         // Если есть отложенные действия, обрабатываем их с небольшой задержкой
         // чтобы гарантировать, что UI обновился и готов
@@ -4402,34 +4463,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
     _showingSpecificPost = false;
     _isProcessingAnnotations = false;
     
-    // Проверяем, что карта готова и есть посты для отображения
-    if (_mapboxMap != null && _isMapLoaded && _posts.isNotEmpty && _activeView == 'map') {
-      // Небольшая задержка для завершения переключения вкладок
-      Future.delayed(Duration(milliseconds: 400), () async {
-        if (mounted && _mapboxMap != null && _isMapLoaded && _activeView == 'map') {
-          try {
-            // Не пересоздаем менеджер полностью, а просто очищаем существующие маркеры
-            if (_pointAnnotationManager != null) {
-              await _pointAnnotationManager!.deleteAll();
-              _markerPostMap.clear();
-            }
-            
-            // Сначала восстанавливаем изображения маркеров в стиле карты
-            await MapboxConfig.reinstallCachedMarkerImages(_mapboxMap!);
-            
-            // Затем загружаем маркеры
-            await _loadPostMarkers();
-          } catch (e) {
-            AppLogger.log('❌ Ошибка при перезагрузке маркеров: $e');
-            // В случае ошибки пробуем полную перезагрузку
-            _pointAnnotationManager = null;
-            _markerPostMap.clear();
-            await _loadPostMarkers();
-          }
-        }
-      });
-    } else {
-    }
+    // Карта теперь остается в памяти через IndexedStack - маркеры уже на карте
   }
 
   // Обработчик события отсутствующего изображения в стиле карты
@@ -4520,32 +4554,6 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver, SingleTi
 
     } catch (e) {
       AppLogger.log("❌ Force reset markers error: $e");
-    }
-  }
-
-  // Мягкий сброс выделения: уменьшаем выделенный маркер до обычного размера, не трогаем остальные
-  Future<void> _clearHighlightKeepMarkers() async {
-    if (_pointAnnotationManager == null) return;
-    final String? highlightedId = _highlightedPostId;
-    // Сбросить внутренние флаги выделения
-    _highlightedPostId = null;
-    _markerClickStage = 0;
-    _showingSpecificPost = false;
-
-    if (highlightedId == null) return;
-
-    try {
-      // Попробуем найти аннотацию выделенного поста и уменьшить её размер
-      final ann = _postIdToAnnotation[highlightedId];
-      if (ann != null) {
-        ann.iconSize = 0.3; // обычный размер
-        await _pointAnnotationManager!.update(ann);
-      } else {
-        // Если прямой ссылки нет, как fallback можно мягко перезагрузить только размеры через recreate
-        // но НЕ удаляем маркеры полностью. Здесь лучше ничего не делать, чтобы не мигали маркеры
-      }
-    } catch (e) {
-      AppLogger.log("⚠️ Error clearing highlight softly: $e");
     }
   }
 } 

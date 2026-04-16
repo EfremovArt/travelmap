@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Dropdown - Button Version</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        #notificationsDropdown {
+            background: transparent;
+            border: none;
+            color: #fff;
+            padding: 0.5rem 0.75rem;
+        }
+        #notificationsDropdown:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container-fluid">
+            <span class="navbar-brand">Test Dropdown - Button</span>
+            
+            <ul class="navbar-nav flex-row">
+                <li class="nav-item dropdown me-3">
+                    <button class="nav-link btn btn-link text-white border-0" id="notificationsDropdown" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="bi bi-bell fs-5"></i>
+                        <span class="badge rounded-pill bg-danger">3</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="notificationsDropdown">
+                        <li><h6 class="dropdown-header">Уведомления</h6></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="#">Уведомление 1</a></li>
+                        <li><a class="dropdown-item" href="#">Уведомление 2</a></li>
+                        <li><a class="dropdown-item" href="#">Уведомление 3</a></li>
+                    </ul>
+                </li>
+            </ul>
+        </div>
+    </nav>
+    
+    <div class="container mt-5">
+        <h1>Тест Dropdown (BUTTON версия)</h1>
+        <p>Кликните на колокольчик выше</p>
+        <p class="text-muted">Используется button вместо a для лучшей работы на мобильных</p>
+        <div id="log" class="border p-3 bg-light"></div>
+    </div>
+
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const log = document.getElementById('log');
+            const dropdown = document.getElementById('notificationsDropdown');
+            
+            log.innerHTML += '<p><strong>DOM loaded</strong></p>';
+            log.innerHTML += '<p>Bootstrap version: ' + bootstrap.Dropdown.VERSION + '</p>';
+            
+            // Add event listeners
+            dropdown.addEventListener('show.bs.dropdown', function() {
+                log.innerHTML += '<p class="text-info">✓ Dropdown showing...</p>';
+            });
+            
+            dropdown.addEventListener('shown.bs.dropdown', function() {
+                log.innerHTML += '<p class="text-success">✓ Dropdown shown!</p>';
+            });
+            
+            dropdown.addEventListener('hide.bs.dropdown', function() {
+                log.innerHTML += '<p class="text-warning">✓ Dropdown hiding...</p>';
+            });
+            
+            dropdown.addEventListener('hidden.bs.dropdown', function() {
+                log.innerHTML += '<p class="text-secondary">✓ Dropdown hidden</p>';
+            });
+            
+            dropdown.addEventListener('click', function(e) {
+                log.innerHTML += '<p class="text-primary">✓ Button clicked</p>';
+            });
+            
+            dropdown.addEventListener('touchstart', function(e) {
+                log.innerHTML += '<p class="text-danger">✓ Touch started</p>';
+            });
+        });
+    </script>
+</body>
+</html>

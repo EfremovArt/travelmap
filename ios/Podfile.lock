@@ -37,17 +37,17 @@ PODS:
     - Flutter
   - location (0.0.1):
     - Flutter
-  - mapbox_maps_flutter (2.7.0):
+  - mapbox_maps_flutter (2.10.0):
     - Flutter
-    - MapboxMaps (= 11.11.0)
+    - MapboxMaps (= 11.14.0)
     - Turf (= 4.0.0)
-  - MapboxCommon (24.11.0):
+  - MapboxCommon (24.14.0):
     - Turf (= 4.0.0)
-  - MapboxCoreMaps (11.11.0):
-    - MapboxCommon (~> 24.11.0)
-  - MapboxMaps (11.11.0):
-    - MapboxCommon (= 24.11.0)
-    - MapboxCoreMaps (= 11.11.0)
+  - MapboxCoreMaps (11.14.0):
+    - MapboxCommon (= 24.14.0)
+  - MapboxMaps (11.14.0):
+    - MapboxCommon (= 24.14.0)
+    - MapboxCoreMaps (= 11.14.0)
     - Turf (= 4.0.0)
   - path_provider_foundation (0.0.1):
     - Flutter
@@ -74,7 +74,6 @@ DEPENDENCIES:
   - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
   - location (from `.symlinks/plugins/location/ios`)
   - mapbox_maps_flutter (from `.symlinks/plugins/mapbox_maps_flutter/ios`)
-  - MapboxMaps (= 11.11.0)
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
   - pointer_interceptor_ios (from `.symlinks/plugins/pointer_interceptor_ios/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
@@ -124,28 +123,28 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   AppAuth: d4f13a8fe0baf391b2108511793e4b479691fb73
-  device_info_plus: c6fb39579d0f423935b0c9ce7ee2f44b71b9fce6
+  device_info_plus: 335f3ce08d2e174b9fdc3db3db0f4e3b1f66bd89
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
-  flutter_keyboard_visibility: 0339d06371254c3eb25eeb90ba8d17dca8f9c069
-  geocoding_ios: a389ea40f6f548de6e63006a2e31bf66ff80769a
-  geolocator_apple: 66b711889fd333205763b83c9dcf0a57a28c7afd
-  google_sign_in_ios: 4111e87aa5e24a4404f00ea13479f35e571969cc
+  flutter_keyboard_visibility: 4625131e43015dbbe759d9b20daaf77e0e3f6619
+  geocoding_ios: 86f1c479822f07a2f79f7094f2b753d1e9e20215
+  geolocator_apple: ab36aa0e8b7d7a2d7639b3b4e48308394e8cef5e
+  google_sign_in_ios: 19297361f2c51d7d8ac0201b866ef1fa5d1f94a8
   GoogleSignIn: d4281ab6cf21542b1cfaff85c191f230b399d2db
   GTMAppAuth: f69bd07d68cd3b766125f7e072c45d7340dea0de
   GTMSessionFetcher: 5aea5ba6bd522a239e236100971f10cb71b96ab6
-  image_picker_ios: c560581cceedb403a6ff17f2f816d7fea1421fc1
-  location: d5cf8598915965547c3f36761ae9cc4f4e87d22e
-  mapbox_maps_flutter: 68d1bcbe0817485955d2fcd57bfb794a85b606b7
-  MapboxCommon: 68daa8291a799ba2e24050160a1eb71e090ac0ca
-  MapboxCoreMaps: 99401a4a1cfddbd5166d29db43d26e7afa28acfd
-  MapboxMaps: 5199095d616bbf02d99f6287dbb2023e66c6987c
-  path_provider_foundation: 2b6b4c569c0fb62ec74538f866245ac84301af46
-  pointer_interceptor_ios: 508241697ff0947f853c061945a8b822463947c1
-  shared_preferences_foundation: fcdcbc04712aee1108ac7fda236f363274528f78
-  sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
+  image_picker_ios: 7fe1ff8e34c1790d6fff70a32484959f563a928a
+  location: 155caecf9da4f280ab5fe4a55f94ceccfab838f8
+  mapbox_maps_flutter: 63957d7c8978bba514fb113906e0d87767eadb5f
+  MapboxCommon: 7aa10394fbcfc1d5a737d2a157c35388666e77e5
+  MapboxCoreMaps: fddb4a008e3200c963a68074afccd8f6d816544c
+  MapboxMaps: 308bb0be5e7a59c9f68a3b06f48998ccb4477583
+  path_provider_foundation: 080d55be775b7414fd5a5ef3ac137b97b097e564
+  pointer_interceptor_ios: ec847ef8b0915778bed2b2cef636f4d177fa8eed
+  shared_preferences_foundation: 9e1978ff2562383bd5676f64ec4e9aa8fa06a6f7
+  sqflite_darwin: 20b2a3a3b70e43edae938624ce550a3cbf66a3d0
   Turf: c9eb11a65d96af58cac523460fd40fec5061b081
-  url_launcher_ios: 5334b05cef931de560670eeae103fd3e431ac3fe
+  url_launcher_ios: 694010445543906933d732453a59da0a173ae33d
 
-PODFILE CHECKSUM: 061ef487a9149868b56c5c57f73467cd718e723e
+PODFILE CHECKSUM: 6c01055ff966e40e8862373e66668a0fbf0b7ba8
 
 COCOAPODS: 1.16.2

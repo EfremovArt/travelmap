@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Card Click</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .photo-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
+        }
+        .photo-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        .photo-card:hover .card-img-top {
+            opacity: 0.95;
+        }
+    </style>
+</head>
+<body class="p-4">
+    <h1>Тест клика на карточку</h1>
+    <p>Проверьте, что модальное окно открывается при клике на любое место карточки, кроме чекбокса и кнопок</p>
+    
+    <div class="row g-3">
+        <div class="col-md-3">
+            <div class="card photo-card h-100">
+                <div class="position-relative">
+                    <img src="https://via.placeholder.com/300x200" 
+                         class="card-img-top" 
+                         alt="Test Photo"
+                         style="height: 200px; object-fit: cover;">
+                    <div class="position-absolute top-0 start-0 p-2">
+                        <input type="checkbox" class="form-check-input photo-checkbox">
+                    </div>
+                    <div class="position-absolute top-0 end-0 m-2 d-flex gap-1">
+                        <button class="btn btn-sm btn-success approve-photo-btn" title="Одобрить">
+                            <i class="bi bi-check"></i>
+                        </button>
+                        <button class="btn btn-sm btn-danger reject-photo-btn" title="Отклонить">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body p-2">
+                    <h6 class="card-title mb-1">Тестовое фото</h6>
+                    <p class="card-text small mb-1">
+                        <i class="bi bi-person"></i> Иван Иванов
+                    </p>
+                    <p class="card-text small mb-0">
+                        <span class="badge bg-warning">На проверке</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="mt-4">
+        <h3>Проверка:</h3>
+        <ul>
+            <li>✅ Клик на изображение → открывает модальное окно</li>
+            <li>✅ Клик на заголовок → открывает модальное окно</li>
+            <li>✅ Клик на текст → открывает модальное окно</li>
+            <li>✅ Клик на badge → открывает модальное окно</li>
+            <li>❌ Клик на чекбокс → НЕ открывает модальное окно (только выбирает)</li>
+            <li>❌ Клик на кнопку одобрить → НЕ открывает модальное окно (только одобряет)</li>
+            <li>❌ Клик на кнопку отклонить → НЕ открывает модальное окно (только отклоняет)</li>
+        </ul>
+    </div>
+    
+    <div class="modal fade" id="testModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Просмотр фото</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>✅ Модальное окно открылось!</p>
+                    <p>Клик на карточку работает правильно.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const card = document.querySelector('.photo-card');
+        const modal = new bootstrap.Modal(document.getElementById('testModal'));
+        
+        card.addEventListener('click', function(e) {
+            // Don't open preview if clicking on checkbox or buttons
+            if (e.target.closest('.photo-checkbox') || 
+                e.target.closest('.approve-photo-btn') || 
+                e.target.closest('.reject-photo-btn')) {
+                console.log('Клик на интерактивный элемент - модальное окно НЕ открывается');
+                return;
+            }
+            console.log('Клик на карточку - открываем модальное окно');
+            modal.show();
+        });
+        
+        // Test checkbox
+        document.querySelector('.photo-checkbox').addEventListener('change', function() {
+            console.log('Чекбокс изменен:', this.checked);
+        });
+        
+        // Test buttons
+        document.querySelector('.approve-photo-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            console.log('Кнопка одобрить нажата');
+            alert('Одобрено!');
+        });
+        
+        document.querySelector('.reject-photo-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            console.log('Кнопка отклонить нажата');
+            alert('Отклонено!');
+        });
+    </script>
+</body>
+</html>

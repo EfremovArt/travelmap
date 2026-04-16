@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Notifications Mobile</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    
+    <!-- Custom Admin CSS -->
+    <link href="/travel/admin/assets/css/admin.css" rel="stylesheet">
+    
+    <style>
+        body {
+            padding-top: 56px;
+        }
+        
+        .test-info {
+            padding: 2rem;
+            background: #f8f9fa;
+            margin: 1rem;
+            border-radius: 8px;
+        }
+        
+        .test-button {
+            margin: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <nav class="navbar navbar-dark bg-dark fixed-top">
+        <div class="container-fluid">
+            <button class="btn btn-dark me-2" type="button">
+                <i class="bi bi-list"></i>
+            </button>
+            
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-map"></i> TravelMap Admin
+            </a>
+            
+            <div class="ms-auto d-flex align-items-center">
+                <!-- Notifications Bell - отдельно от navbar-nav -->
+                <div class="position-relative me-3">
+                    <a class="nav-link d-flex align-items-center justify-content-center" 
+                       href="#" 
+                       id="notificationsDropdown" 
+                       role="button"
+                       aria-expanded="false"
+                       style="min-width: 44px; min-height: 44px; color: #fff;">
+                        <i class="bi bi-bell fs-5"></i>
+                        <span id="notificationBadge" class="badge rounded-pill bg-danger position-absolute" style="top: 8px; right: 8px; pointer-events: none;">
+                            5
+                        </span>
+                    </a>
+                    <div class="dropdown-menu dropdown-menu-end" id="notificationsMenu" style="min-width: 320px; max-width: 400px; display: none; position: absolute; right: 0; top: 100%; z-index: 1050;">
+                        <div class="dropdown-header d-flex justify-content-between align-items-center">
+                            <span>Уведомления</span>
+                            <span id="totalNotifications" class="badge bg-primary">5</span>
+                        </div>
+                        <hr class="dropdown-divider">
+                        <div id="notificationsList">
+                            <a class="dropdown-item d-flex justify-content-between align-items-center" href="#">
+                                <span>
+                                    <i class="bi bi-image text-warning"></i>
+                                    Новые фото на модерации
+                                </span>
+                                <span class="badge bg-warning text-dark">3</span>
+                            </a>
+                            <a class="dropdown-item d-flex justify-content-between align-items-center" href="#">
+                                <span>
+                                    <i class="bi bi-chat-dots text-danger"></i>
+                                    Новые комментарии
+                                </span>
+                                <span class="badge bg-danger">2</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                
+                <ul class="navbar-nav flex-row align-items-center">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> 
+                            <span class="d-none d-md-inline">Admin</span>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><span class="dropdown-item-text text-muted small">admin@example.com</span></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#"><i class="bi bi-box-arrow-right"></i> Выход</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="test-info">
+            <h2>Тест уведомлений на мобильных</h2>
+            <p>Нажмите на колокольчик в верхнем правом углу, чтобы открыть уведомления.</p>
+            <p><strong>Ожидаемое поведение:</strong></p>
+            <ul>
+                <li>Колокольчик должен реагировать на нажатия на мобильных устройствах</li>
+                <li>Dropdown должен открываться без расширения navbar</li>
+                <li>Dropdown должен быть позиционирован справа</li>
+                <li>При клике вне dropdown он должен закрываться</li>
+            </ul>
+            
+            <div class="mt-3">
+                <button class="btn btn-primary test-button" onclick="toggleNotifications()">
+                    Переключить уведомления
+                </button>
+                <button class="btn btn-secondary test-button" onclick="addNotification()">
+                    Добавить уведомление
+                </button>
+                <button class="btn btn-danger test-button" onclick="clearNotifications()">
+                    Очистить уведомления
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        // Custom notifications dropdown toggle
+        const notificationsDropdown = document.getElementById('notificationsDropdown');
+        const notificationsMenu = document.getElementById('notificationsMenu');
+        
+        if (notificationsDropdown && notificationsMenu) {
+            // Toggle dropdown on click/tap
+            notificationsDropdown.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const isShown = notificationsMenu.classList.contains('show');
+                
+                if (isShown) {
+                    notificationsMenu.classList.remove('show');
+                    notificationsDropdown.setAttribute('aria-expanded', 'false');
+                } else {
+                    notificationsMenu.classList.add('show');
+                    notificationsDropdown.setAttribute('aria-expanded', 'true');
+                }
+            });
+            
+            // Close dropdown when clicking outside
+            document.addEventListener('click', function(e) {
+                if (!notificationsDropdown.contains(e.target) && !notificationsMenu.contains(e.target)) {
+                    notificationsMenu.classList.remove('show');
+                    notificationsDropdown.setAttribute('aria-expanded', 'false');
+                }
+            });
+            
+            // Prevent dropdown from closing when clicking inside
+            notificationsMenu.addEventListener('click', function(e) {
+                e.stopPropagation();
+            });
+        }
+        
+        // Test functions
+        function toggleNotifications() {
+            const isShown = notificationsMenu.classList.contains('show');
+            if (isShown) {
+                notificationsMenu.classList.remove('show');
+                notificationsDropdown.setAttribute('aria-expanded', 'false');
+            } else {
+                notificationsMenu.classList.add('show');
+                notificationsDropdown.setAttribute('aria-expanded', 'true');
+            }
+        }
+        
+        let notificationCount = 5;
+        
+        function addNotification() {
+            notificationCount++;
+            document.getElementById('notificationBadge').textContent = notificationCount;
+            document.getElementById('totalNotifications').textContent = notificationCount;
+            
+            const newItem = document.createElement('a');
+            newItem.className = 'dropdown-item d-flex justify-content-between align-items-center';
+            newItem.href = '#';
+            newItem.innerHTML = `
+                <span>
+                    <i class="bi bi-info-circle text-info"></i>
+                    Новое уведомление
+                </span>
+                <span class="badge bg-info">1</span>
+            `;
+            document.getElementById('notificationsList').appendChild(newItem);
+        }
+        
+        function clearNotifications() {
+            notificationCount = 0;
+            document.getElementById('notificationBadge').textContent = '0';
+            document.getElementById('notificationBadge').style.display = 'none';
+            document.getElementById('totalNotifications').textContent = '0';
+            document.getElementById('notificationsList').innerHTML = `
+                <div class="text-center py-3 text-muted">
+                    <i class="bi bi-check-circle fs-3"></i>
+                    <p class="mb-0 small">Нет новых уведомлений</p>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>

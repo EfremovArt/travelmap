@@ -5,7 +5,6 @@ import 'dart:async';
 import '../models/post.dart';
 import '../services/social_service.dart';
 import '../services/user_service.dart';
-import '../services/map_filter_service.dart';
 import '../widgets/post_card.dart';
 import '../widgets/album_card.dart';
 import '../utils/logger.dart';
@@ -14,6 +13,9 @@ import '../tabs/albums_tab.dart' show AlbumDetailScreen, EditAlbumScreen;
 import '../screens/comments_screen.dart';
 import '../screens/location_posts_screen.dart';
 import '../screens/main_screen.dart';
+import '../utils/map_helper.dart';
+import '../config/mapbox_config.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 /// Tab with posts from followed users
 class FollowingTab extends StatefulWidget {
   const FollowingTab({Key? key}) : super(key: key);
@@ -44,17 +46,11 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
   String _currentUserId = '';
   String _userId = '';
   
-  // Map filter service
-  final MapFilterService _mapFilterService = MapFilterService();
-  
   // ScrollController для прокрутки к посту
   final ScrollController _scrollController = ScrollController();
   
   // Map для хранения индексов постов в списке
   final Map<String, int> _postIdToIndex = {};
-  
-  // Флаг для предотвращения повторных срабатываний прокрутки
-  bool _isScrollingToPost = false;
   
   @override
   void initState() {
@@ -94,45 +90,6 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
       UserService.clearCache();
       // Перезагружаем данные пользователя
       _loadUserData();
-      
-      // Проверяем, нужно ли прокрутить к посту после возврата с карты
-      _checkAndScrollToPost();
-    }
-  }
-  
-  // Метод для проверки и прокрутки к посту при возврате с карты
-  void _checkAndScrollToPost() {
-    AppLogger.log('🔍 FollowingTab: _checkAndScrollToPost вызван');
-    AppLogger.log('   _isScrollingToPost: $_isScrollingToPost');
-    AppLogger.log('   scrollToPostId: ${_mapFilterService.scrollToPostId}');
-    
-    // Предотвращаем повторные срабатывания
-    if (_isScrollingToPost) {
-      AppLogger.log('   ⏭️ Прокрутка уже в процессе, пропускаем');
-      return;
-    }
-    
-    final scrollToPostId = _mapFilterService.scrollToPostId;
-    if (scrollToPostId != null) {
-      AppLogger.log('🔄 FollowingTab: Обнаружен запрос на прокрутку к посту: $scrollToPostId');
-      _isScrollingToPost = true;
-      
-      // Задержка для завершения анимации переключения вкладки и построения списка
-      Future.delayed(Duration(milliseconds: 600), () {
-        if (mounted) {
-          _scrollToPostById(scrollToPostId);
-          // Очищаем ID после прокрутки
-          _mapFilterService.clearScrollToPostId();
-          // Сбрасываем флаг после небольшой дополнительной задержки
-          Future.delayed(Duration(milliseconds: 100), () {
-            _isScrollingToPost = false;
-          });
-        } else {
-          AppLogger.log('⚠️ Widget не mounted, отменяем прокрутку');
-        }
-      });
-    } else {
-      AppLogger.log('   ℹ️ scrollToPostId == null, прокрутка не требуется');
     }
   }
   
@@ -344,7 +301,7 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
   }
   
   // Show post on map
-  void _showOnMap(Post post) {
+  void _showOnMap(Post post) async {
     if (post.location == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -355,37 +312,26 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
       return;
     }
 
-    AppLogger.log("📍 Showing following post ${post.id} on map with coordinates ${post.location!.latitude}, ${post.location!.longitude}");
+    AppLogger.log("📍 Showing following post ${post.id} on map");
     
-    // Устанавливаем фильтр для показа только постов из followings с выделением конкретного поста
-    // ID поста для прокрутки будет сохранен при клике на увеличенный маркер в home_tab
-    _mapFilterService.showFollowingsWithHighlight(post);
-    
-    // Получаем доступ к MainScreen через глобальный ключ
-    if (mainScreenKey.currentState != null) {
-      // Переключаемся на вкладку Home (карта)
-      mainScreenKey.currentState?.switchToTab(0);
-      
-      // Показываем уведомление пользователю
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Showing following posts on map with highlighted post'),
-          duration: Duration(seconds: 2),
+    // Открываем отдельный экран карты для постов followings
+    final selectedId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => FollowingsMapScreen(
+          posts: _followingPosts,
+          selectedPostId: post.id,
+          title: 'Followings Map',
         ),
-      );
-    } else {
-      // Запасной вариант навигации
-      AppLogger.log("MainScreen not found, using fallback navigation");
-      Navigator.of(context).popUntil((route) => route.isFirst);
-      
-      Future.delayed(Duration(milliseconds: 300), () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Showing following posts on map with highlighted post'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      });
+      ),
+    );
+    
+    // После закрытия карты прокручиваем к выбранному посту
+    if (selectedId != null && selectedId.isNotEmpty) {
+      // Небольшая задержка для завершения анимации закрытия экрана карты
+      await Future.delayed(Duration(milliseconds: 300));
+      if (mounted) {
+        await _scrollToPostById(selectedId);
+      }
     }
   }
   
@@ -454,12 +400,6 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
   
   @override
   Widget build(BuildContext context) {
-    // Проверяем, нужно ли прокрутить к посту после возврата с карты
-    // Делаем это каждый раз когда вкладка становится видимой
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkAndScrollToPost();
-    });
-    
     return Scaffold(
       appBar: AppBar(
         title: Text('Following'),
@@ -821,5 +761,198 @@ class _FollowingTabState extends State<FollowingTab> with WidgetsBindingObserver
     } catch (e) {
       AppLogger.log("Error opening upload screen: $e");
     }
+  }
+}
+
+// ===================== Followings Map Screen =====================
+
+class FollowingsMapScreen extends StatefulWidget {
+  final List<Post> posts;
+  final String selectedPostId;
+  final String title;
+  const FollowingsMapScreen({Key? key, required this.posts, required this.selectedPostId, required this.title}) : super(key: key);
+
+  @override
+  State<FollowingsMapScreen> createState() => _FollowingsMapScreenState();
+}
+
+class _FollowingsMapScreenState extends State<FollowingsMapScreen> {
+  MapboxMap? _map;
+  PointAnnotationManager? _manager;
+  final Map<String, String> _annotationIdToPostId = {};
+  bool _isSettingUp = false;
+  String? _currentSelectedPostId;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentSelectedPostId = widget.selectedPostId;
+  }
+
+  @override
+  void dispose() {
+    // Попробуем безопасно удалить менеджер аннотаций
+    try {
+      if (_map != null && _manager != null) {
+        _map!.annotations.removeAnnotationManager(_manager!);
+      }
+    } catch (_) {}
+    super.dispose();
+  }
+
+  Future<void> _onMapCreated(MapboxMap map) async {
+    _map = map;
+    
+    // Отключаем шкалу зума
+    try {
+      await map.scaleBar.updateSettings(
+        ScaleBarSettings(
+          enabled: false,
+        )
+      );
+    } catch (e) {
+      // Игнорируем ошибки
+    }
+  }
+
+  Future<void> _setupAfterStyleLoaded() async {
+    if (_map == null) return;
+    if (_isSettingUp) return;
+    _isSettingUp = true;
+
+    // Регистрируем базовые изображения, затем миниатюры постов
+    await MapboxConfig.registerMapboxMarkerImages(_map!);
+    await MapboxConfig.preloadMarkerImagesForPosts(_map!, widget.posts);
+
+    // Удаляем прежний менеджер, если он был
+    try {
+      if (_manager != null) {
+        await _map!.annotations.removeAnnotationManager(_manager!);
+      }
+    } catch (_) {}
+
+    // Создаем новый менеджер
+    _manager = await MapHelper.createAnnotationManager(_map!);
+    if (_manager == null) return;
+
+    _annotationIdToPostId.clear();
+
+    // Обработчик кликов по маркеру
+    await MapHelper.addClickListenerToAnnotation(_manager!, (annotationId) {
+      final postId = _annotationIdToPostId[annotationId];
+      if (postId != null) {
+        // Если кликнули на уже выбранный маркер - закрываем экран
+        if (_currentSelectedPostId == postId) {
+          Navigator.of(context).pop(postId);
+        } else {
+          // Иначе выделяем этот маркер
+          setState(() {
+            _currentSelectedPostId = postId;
+          });
+          _redrawMarkers();
+        }
+      }
+    });
+
+    // Добавляем маркеры
+    await _addMarkers();
+
+    // Центрируем камеру на выбранном посте
+    final center = widget.posts.firstWhere((p) => p.id == widget.selectedPostId, orElse: () => widget.posts.first);
+    await MapHelper.moveCamera(
+      mapboxMap: _map!,
+      latitude: center.location.latitude,
+      longitude: center.location.longitude,
+      zoom: 1.5,
+      animate: true,
+    );
+    _isSettingUp = false;
+  }
+
+  Future<void> _addMarkers() async {
+    if (_map == null || _manager == null) return;
+
+    for (final post in widget.posts) {
+      final isSelected = post.id == _currentSelectedPostId;
+      // Используем зарегистрированное изображение поста как иконку
+      final iconId = "post-marker-${post.id}"; // совпадает с MapboxConfig.registerPostImageAsMarker
+      // Если вдруг не зарегистрировано, используем стандартный
+      bool hasImage = false;
+      try { hasImage = await _map!.style.hasStyleImage(iconId); } catch (_) {}
+      final String imageToUse = hasImage ? iconId : 'custom-marker';
+
+      final options = PointAnnotationOptions(
+        geometry: Point(coordinates: Position(post.location.longitude, post.location.latitude)),
+        iconImage: imageToUse,
+        iconSize: isSelected ? 0.5 : 0.25,
+        iconAnchor: IconAnchor.BOTTOM,
+      );
+      PointAnnotation? annotation;
+      try {
+        // Пробуем создать маркер
+        annotation = await _manager!.create(options);
+      } catch (e) {
+        // Если менеджер недействителен — пересоздаем и повторяем один раз
+        final msg = e.toString();
+        if (msg.contains('No manager found')) {
+          try {
+            if (_manager != null) {
+              await _map!.annotations.removeAnnotationManager(_manager!);
+            }
+          } catch (_) {}
+          _manager = await MapHelper.createAnnotationManager(_map!);
+          if (_manager != null) {
+            try { annotation = await _manager!.create(options); } catch (_) {}
+          }
+        }
+      }
+      if (annotation != null) {
+        _annotationIdToPostId[annotation.id] = post.id;
+      }
+    }
+  }
+
+  Future<void> _redrawMarkers() async {
+    if (_map == null || _manager == null) return;
+    
+    // Удаляем все существующие маркеры
+    try {
+      await _manager!.deleteAll();
+      _annotationIdToPostId.clear();
+    } catch (e) {
+      // Игнорируем ошибки
+    }
+    
+    // Создаем маркеры заново с обновленными размерами
+    await _addMarkers();
+  }
+
+  void _onMapTap(MapContentGestureContext mapContext) {
+    // Сбрасываем выделение при нажатии на пустое место карты
+    if (_currentSelectedPostId != null) {
+      setState(() {
+        _currentSelectedPostId = null;
+      });
+      _redrawMarkers();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title, style: const TextStyle(color: Colors.black87)),
+        backgroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        elevation: 0,
+      ),
+      body: MapWidget(
+        key: const ValueKey('followings_map_widget'),
+        styleUri: MapboxConfig.DEFAULT_STYLE_URI,
+        onMapCreated: _onMapCreated,
+        onStyleLoadedListener: (_) => _setupAfterStyleLoaded(),
+        onTapListener: _onMapTap,
+      ),
+    );
   }
 } 

@@ -13,11 +13,13 @@ import 'package:http/http.dart' as http;
 
 class CommercialPostMapScreen extends StatefulWidget {
   final CommercialPost post;
+  final List<CommercialPost> allPosts; // Все коммерческие посты пользователя
   final Function(CommercialPost)? onPostTap;
 
   const CommercialPostMapScreen({
     Key? key,
     required this.post,
+    required this.allPosts,
     this.onPostTap,
   }) : super(key: key);
 
@@ -30,11 +32,16 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
   PointAnnotationManager? _pointAnnotationManager;
   bool _isLoading = true;
   String? _error;
+  String? _currentSelectedPostId; // ID текущего выбранного поста
+  Map<String, String> _annotationIdToPostId = {}; // Маппинг ID аннотации на ID поста
+  Map<String, PointAnnotation> _postIdToAnnotation = {}; // Маппинг ID поста на аннотацию
+  Map<String, String> _postIdToMarkerImageId = {}; // Маппинг ID поста на ID изображения маркера
 
   @override
   void initState() {
     super.initState();
-    AppLogger.log('🗺️ CommercialPostMapScreen initialized for post ${widget.post.id}');
+    _currentSelectedPostId = widget.post.id.toString();
+    AppLogger.log('🗺️ CommercialPostMapScreen initialized for post ${widget.post.id} with ${widget.allPosts.length} total posts');
   }
 
   @override
@@ -104,8 +111,8 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
         });
       }
       
-      // Добавляем маркер для коммерческого поста
-      _addCommercialPostMarker();
+      // Добавляем маркеры для всех коммерческих постов
+      _addAllCommercialPostMarkers();
       
     } catch (e) {
       AppLogger.log("❌ Error initializing commercial post map: $e");
@@ -118,97 +125,164 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
     }
   }
 
-  /// Добавляет маркер для коммерческого поста
-  Future<void> _addCommercialPostMarker() async {
-    if (!widget.post.hasLocation || _pointAnnotationManager == null) {
-      AppLogger.log("❌ Cannot add marker: no location data or annotation manager");
+  /// Добавляет маркеры для всех коммерческих постов
+  Future<void> _addAllCommercialPostMarkers() async {
+    if (_pointAnnotationManager == null) {
+      AppLogger.log("❌ Cannot add markers: annotation manager is null");
       return;
     }
 
     try {
-      // Создаем точку для маркера
-      final point = Point(
-        coordinates: Position(
-          widget.post.longitude!,
-          widget.post.latitude!,
-        ),
-      );
-
-      // Настройки маркера
-      String markerImageId = "custom-marker"; // Используем стандартный маркер по умолчанию
-      double iconSize = 0.4; // Стандартный размер
-      bool hasCustomImage = false;
+      _annotationIdToPostId.clear();
+      _postIdToAnnotation.clear();
+      _postIdToMarkerImageId.clear();
       
-      // Если у коммерческого поста есть изображения, используем одно из них для маркера
-      final imageUrl = _getPostImageUrl();
-      if (imageUrl.isNotEmpty) {
-        try {
-          AppLogger.log("🔄 Loading image for commercial post marker from: $imageUrl");
-          
-          // Загружаем изображение из URL
-          final response = await http.get(Uri.parse(imageUrl));
-          
-          if (response.statusCode == 200) {
-            // Регистрируем изображение как круглый маркер
-            final String customMarkerId = await MapboxConfig.registerPostImageAsMarker(
-              _mapboxMap!,
-              response.bodyBytes,
-              "commercial-${widget.post.id}",
-            );
+      // Проходим по всем постам и добавляем маркеры
+      for (final post in widget.allPosts) {
+        if (!post.hasLocation) continue;
+        
+        final postId = post.id.toString();
+        final isSelected = postId == _currentSelectedPostId;
+        
+        // Создаем точку для маркера
+        final point = Point(
+          coordinates: Position(
+            post.longitude!,
+            post.latitude!,
+          ),
+        );
+
+        // Настройки маркера
+        String markerImageId = "custom-marker"; // Используем стандартный маркер по умолчанию
+        double iconSize = isSelected ? 0.5 : 0.25; // Выделенный маркер больше
+        
+        // Если у коммерческого поста есть изображения, используем одно из них для маркера
+        final imageUrl = _getPostImageUrl(post);
+        if (imageUrl.isNotEmpty) {
+          try {
+            // Загружаем изображение из URL
+            final response = await http.get(Uri.parse(imageUrl));
             
-            // Проверяем, что изображение успешно зарегистрировано
-            final bool imageRegistered = await _mapboxMap!.style.hasStyleImage(customMarkerId);
-            if (imageRegistered) {
-              markerImageId = customMarkerId;
-              iconSize = 0.5; // Увеличиваем размер для кастомного изображения
-              hasCustomImage = true;
-              AppLogger.log("✅ Custom marker image registered: $customMarkerId");
-            } else {
-              AppLogger.log("⚠️ Failed to register custom marker image, using default");
+            if (response.statusCode == 200) {
+              // Регистрируем изображение как круглый маркер
+              final String customMarkerId = await MapboxConfig.registerPostImageAsMarker(
+                _mapboxMap!,
+                response.bodyBytes,
+                "commercial-$postId",
+              );
+              
+              // Проверяем, что изображение успешно зарегистрировано
+              final bool imageRegistered = await _mapboxMap!.style.hasStyleImage(customMarkerId);
+              if (imageRegistered) {
+                markerImageId = customMarkerId;
+                AppLogger.log("✅ Custom marker image registered: $customMarkerId");
+              }
             }
-          } else {
-            AppLogger.log("⚠️ Failed to load image (${response.statusCode}), using default marker");
+          } catch (e) {
+            AppLogger.log("⚠️ Error processing image for marker: $e, using default marker");
           }
-        } catch (e) {
-          AppLogger.log("⚠️ Error processing image for marker: $e, using default marker");
         }
+
+        // Сохраняем информацию о маркере для этого поста
+        _postIdToMarkerImageId[postId] = markerImageId;
+        
+        // Создаем опции для аннотации
+        final pointAnnotationOptions = PointAnnotationOptions(
+          geometry: point,
+          iconImage: markerImageId,
+          iconSize: iconSize,
+          iconAnchor: IconAnchor.BOTTOM,
+        );
+
+        // Добавляем маркер
+        final annotation = await _pointAnnotationManager!.create(pointAnnotationOptions);
+        _annotationIdToPostId[annotation.id] = postId;
+        _postIdToAnnotation[postId] = annotation; // Сохраняем ссылку на аннотацию
+        
+        AppLogger.log("✅ Commercial post marker added: postId=$postId, isSelected=$isSelected, imageId=$markerImageId");
       }
 
-      // Создаем опции для аннотации
-      final pointAnnotationOptions = PointAnnotationOptions(
-        geometry: point,
-        iconImage: markerImageId,
-        iconSize: iconSize,
-        iconAnchor: IconAnchor.BOTTOM,
-        textField: widget.post.locationName ?? 'Commercial Post',
-        textSize: 12.0,
-        textOffset: [0.0, 2.0],
-        textColor: Colors.black.value,
-        textHaloColor: Colors.white.value,
-        textHaloWidth: 2.0,
-        iconOffset: [0.0, 0.0],
-        iconOpacity: 1.0,
-      );
-
-      // Добавляем маркер
-      await _pointAnnotationManager!.create(pointAnnotationOptions);
-      AppLogger.log("✅ Commercial post marker added at ${widget.post.latitude}, ${widget.post.longitude}");
-      AppLogger.log("🔹 Marker details: imageId=$markerImageId, size=$iconSize, hasCustomImage=$hasCustomImage");
-
-      // Перемещаем камеру к маркеру
+      // Перемещаем камеру к выбранному посту
       await _moveCameraToPost();
 
     } catch (e) {
-      AppLogger.log("❌ Error adding commercial post marker: $e");
+      AppLogger.log("❌ Error adding commercial post markers: $e");
+    }
+  }
+  
+  /// Добавляет маркеры (используется при первой загрузке и при перерисовке)
+  Future<void> _addMarkersOnly() async {
+    if (_pointAnnotationManager == null) return;
+    
+    try {
+      // Создаем маркеры с правильными размерами
+      for (final post in widget.allPosts) {
+        if (!post.hasLocation) continue;
+        
+        final postId = post.id.toString();
+        final isSelected = postId == _currentSelectedPostId;
+        
+        // Создаем точку для маркера
+        final point = Point(
+          coordinates: Position(
+            post.longitude!,
+            post.latitude!,
+          ),
+        );
+
+        // Используем сохраненный imageId для этого поста
+        final markerImageId = _postIdToMarkerImageId[postId] ?? "custom-marker";
+        final iconSize = isSelected ? 0.5 : 0.25;
+
+        // Создаем опции для аннотации
+        final pointAnnotationOptions = PointAnnotationOptions(
+          geometry: point,
+          iconImage: markerImageId,
+          iconSize: iconSize,
+          iconAnchor: IconAnchor.BOTTOM,
+        );
+
+        // Добавляем маркер
+        final annotation = await _pointAnnotationManager!.create(pointAnnotationOptions);
+        _annotationIdToPostId[annotation.id] = postId;
+        _postIdToAnnotation[postId] = annotation;
+      }
+      
+      AppLogger.log("✅ Added ${_postIdToAnnotation.length} markers");
+    } catch (e) {
+      AppLogger.log("❌ Error adding markers: $e");
+    }
+  }
+  
+  /// Перерисовывает маркеры (удаляет и создает заново)
+  Future<void> _redrawMarkers() async {
+    if (_pointAnnotationManager == null) return;
+    
+    try {
+      AppLogger.log("🔄 Redrawing markers...");
+      
+      // Удаляем все существующие маркеры
+      await _pointAnnotationManager!.deleteAll();
+      _annotationIdToPostId.clear();
+      _postIdToAnnotation.clear();
+      
+      // Небольшая задержка для обновления карты
+      await Future.delayed(Duration(milliseconds: 50));
+      
+      // Создаем маркеры заново
+      await _addMarkersOnly();
+      
+    } catch (e) {
+      AppLogger.log("❌ Error redrawing markers: $e");
     }
   }
 
   /// Получает URL изображения для поста
-  String _getPostImageUrl() {
-    if (widget.post.hasImages && widget.post.imageUrls.isNotEmpty) {
-      return ApiConfig.formatImageUrl(widget.post.imageUrls.first);
-    } else if (widget.post.imageUrl != null && widget.post.imageUrl!.isNotEmpty) {
-      return ApiConfig.formatImageUrl(widget.post.imageUrl!);
+  String _getPostImageUrl(CommercialPost post) {
+    if (post.hasImages && post.imageUrls.isNotEmpty) {
+      return ApiConfig.formatImageUrl(post.imageUrls.first);
+    } else if (post.imageUrl != null && post.imageUrl!.isNotEmpty) {
+      return ApiConfig.formatImageUrl(post.imageUrl!);
     }
     return ''; // Пустая строка если нет изображений
   }
@@ -225,11 +299,11 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
             widget.post.latitude!,
           ),
         ),
-        zoom: 15.0,
+        zoom: 1.5, // Используем зум 1.5 как в альбомах
       );
 
       await _mapboxMap!.setCamera(cameraOptions);
-      AppLogger.log("📱 Camera moved to commercial post location");
+      AppLogger.log("📱 Camera moved to commercial post location with zoom 1.5");
     } catch (e) {
       AppLogger.log("❌ Error moving camera: $e");
     }
@@ -237,12 +311,29 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
 
   /// Обработчик клика по маркеру
   bool _onMarkerClick(PointAnnotation annotation) {
-    AppLogger.log("📍 Commercial post marker clicked with ID: ${annotation.id}");
+    final postId = _annotationIdToPostId[annotation.id];
+    if (postId == null) {
+      AppLogger.log("⚠️ Post ID not found for annotation: ${annotation.id}");
+      return false;
+    }
     
-    // Сразу возвращаемся к посту
-    Navigator.pop(context); // Закрываем экран карты
-    if (widget.onPostTap != null) {
-      widget.onPostTap!(widget.post);
+    AppLogger.log("📍 Commercial post marker clicked: postId=$postId, current=$_currentSelectedPostId");
+    
+    // Если кликнули на уже выбранный маркер - возвращаемся к посту
+    if (_currentSelectedPostId == postId) {
+      AppLogger.log("✅ Returning to commercial post $postId");
+      Navigator.pop(context); // Закрываем экран карты
+      if (widget.onPostTap != null) {
+        final post = widget.allPosts.firstWhere((p) => p.id.toString() == postId);
+        widget.onPostTap!(post);
+      }
+    } else {
+      // Иначе выделяем этот маркер
+      AppLogger.log("🎯 Selecting commercial post $postId");
+      setState(() {
+        _currentSelectedPostId = postId;
+      });
+      _redrawMarkers();
     }
     
     return true; // Возвращаем true чтобы указать, что событие было обработано
@@ -302,8 +393,18 @@ class _CommercialPostMapScreenState extends State<CommercialPostMapScreen> {
                   widget.post.latitude ?? MapboxConfig.DEFAULT_LATITUDE,
                 ),
               ),
-              zoom: 15.0,
+              zoom: 1.5,
             ),
+            onTapListener: (coordinate) {
+              // При нажатии на пустое место карты убираем выделение со всех маркеров
+              if (_currentSelectedPostId != null) {
+                AppLogger.log("🗺️ Map tapped, removing marker selection");
+                setState(() {
+                  _currentSelectedPostId = null;
+                });
+                _redrawMarkers();
+              }
+            },
           ),
           
           // Индикатор загрузки

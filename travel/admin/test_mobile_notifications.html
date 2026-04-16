@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Тест уведомлений на мобильных</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    
+    <!-- Custom Admin CSS -->
+    <link href="/travel/admin/assets/css/admin.css" rel="stylesheet">
+    
+    <style>
+        body {
+            padding-top: 70px;
+        }
+        .test-info {
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin: 20px;
+        }
+        .test-button {
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <nav class="navbar navbar-dark bg-dark fixed-top">
+        <div class="container-fluid">
+            <button class="btn btn-dark me-2" type="button">
+                <i class="bi bi-list"></i>
+            </button>
+            
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-map"></i> TravelMap Admin
+            </a>
+            
+            <div class="ms-auto d-flex align-items-center">
+                <ul class="navbar-nav flex-row align-items-center">
+                    <!-- Notifications Bell -->
+                    <li class="nav-item dropdown me-3">
+                        <a class="nav-link position-relative d-flex align-items-center justify-content-center" 
+                           href="#" 
+                           id="notificationsDropdown" 
+                           role="button" 
+                           data-bs-toggle="dropdown" 
+                           aria-expanded="false"
+                           style="min-width: 44px; min-height: 44px;">
+                            <i class="bi bi-bell fs-5"></i>
+                            <span id="notificationBadge" class="badge rounded-pill bg-danger position-absolute" style="top: 8px; right: 8px; pointer-events: none;">
+                                5
+                            </span>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="notificationsDropdown" style="min-width: 320px; max-width: 400px;">
+                            <li>
+                                <h6 class="dropdown-header d-flex justify-content-between align-items-center">
+                                    <span>Уведомления</span>
+                                    <span id="totalNotifications" class="badge bg-primary">5</span>
+                                </h6>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item d-flex justify-content-between align-items-center" href="#">
+                                    <span>
+                                        <i class="bi bi-image text-warning"></i>
+                                        Новые фото на модерации
+                                    </span>
+                                    <span class="badge bg-warning text-dark">3</span>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item d-flex justify-content-between align-items-center" href="#">
+                                    <span>
+                                        <i class="bi bi-chat-dots text-danger"></i>
+                                        Новые комментарии
+                                    </span>
+                                    <span class="badge bg-danger">2</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                    
+                    <!-- Admin User Dropdown -->
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> 
+                            <span class="d-none d-md-inline">Admin</span>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><span class="dropdown-item-text text-muted small">admin@example.com</span></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#"><i class="bi bi-box-arrow-right"></i> Выход</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="test-info">
+            <h2>Тест колокольчика уведомлений на мобильных</h2>
+            <p><strong>Инструкции по тестированию:</strong></p>
+            <ol>
+                <li>Откройте эту страницу на мобильном устройстве или в режиме эмуляции мобильного устройства в браузере</li>
+                <li>Нажмите на колокольчик уведомлений в правом верхнем углу</li>
+                <li>Должно открыться выпадающее меню с уведомлениями</li>
+                <li>Проверьте, что клик работает как на touch, так и на click событиях</li>
+            </ol>
+            
+            <div class="alert alert-info">
+                <strong>Исправления:</strong>
+                <ul>
+                    <li>Добавлен z-index для колокольчика</li>
+                    <li>Увеличена область клика (min-width: 44px, min-height: 44px)</li>
+                    <li>Добавлен pointer-events: none для badge, чтобы он не блокировал клики</li>
+                    <li>Добавлены обработчики click и touchend событий</li>
+                    <li>Улучшена позиционирование dropdown меню на мобильных</li>
+                </ul>
+            </div>
+            
+            <button class="btn btn-primary test-button" onclick="testClick()">
+                Тест клика (консоль)
+            </button>
+            
+            <button class="btn btn-success test-button" onclick="toggleDropdown()">
+                Открыть/закрыть dropdown программно
+            </button>
+        </div>
+        
+        <div class="test-info mt-3">
+            <h4>Информация об устройстве:</h4>
+            <p id="deviceInfo"></p>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    
+    <script>
+        // Display device info
+        document.getElementById('deviceInfo').innerHTML = `
+            <strong>User Agent:</strong> ${navigator.userAgent}<br>
+            <strong>Screen Width:</strong> ${window.innerWidth}px<br>
+            <strong>Screen Height:</strong> ${window.innerHeight}px<br>
+            <strong>Touch Support:</strong> ${('ontouchstart' in window) ? 'Yes' : 'No'}
+        `;
+        
+        // Initialize dropdowns
+        function initDropdowns() {
+            const dropdownElementList = document.querySelectorAll('[data-bs-toggle="dropdown"]');
+            const dropdownList = [...dropdownElementList].map(dropdownToggleEl => {
+                return new bootstrap.Dropdown(dropdownToggleEl, {
+                    autoClose: true,
+                    boundary: 'viewport',
+                    popperConfig: {
+                        strategy: 'fixed'
+                    }
+                });
+            });
+            
+            console.log(`Initialized ${dropdownList.length} dropdowns`);
+            
+            // Add explicit click handler for notifications dropdown on mobile
+            const notificationsDropdown = document.getElementById('notificationsDropdown');
+            if (notificationsDropdown) {
+                notificationsDropdown.addEventListener('click', function(e) {
+                    console.log('Click event triggered');
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const dropdown = bootstrap.Dropdown.getInstance(this) || new bootstrap.Dropdown(this);
+                    dropdown.toggle();
+                }, { passive: false });
+                
+                // Also handle touch events for better mobile support
+                notificationsDropdown.addEventListener('touchend', function(e) {
+                    console.log('Touchend event triggered');
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const dropdown = bootstrap.Dropdown.getInstance(this) || new bootstrap.Dropdown(this);
+                    dropdown.toggle();
+                }, { passive: false });
+            }
+        }
+        
+        // Test click function
+        function testClick() {
+            console.log('Test button clicked!');
+            alert('Кнопка работает! Проверьте консоль для деталей.');
+        }
+        
+        // Toggle dropdown programmatically
+        function toggleDropdown() {
+            const notificationsDropdown = document.getElementById('notificationsDropdown');
+            const dropdown = bootstrap.Dropdown.getInstance(notificationsDropdown) || new bootstrap.Dropdown(notificationsDropdown);
+            dropdown.toggle();
+            console.log('Dropdown toggled programmatically');
+        }
+        
+        // Initialize on page load
+        $(document).ready(function() {
+            initDropdowns();
+            console.log('Page loaded and dropdowns initialized');
+        });
+        
+        // Log dropdown events
+        const notificationsDropdown = document.getElementById('notificationsDropdown');
+        if (notificationsDropdown) {
+            notificationsDropdown.addEventListener('show.bs.dropdown', function() {
+                console.log('Dropdown is showing');
+            });
+            
+            notificationsDropdown.addEventListener('shown.bs.dropdown', function() {
+                console.log('Dropdown is shown');
+            });
+            
+            notificationsDropdown.addEventListener('hide.bs.dropdown', function() {
+                console.log('Dropdown is hiding');
+            });
+            
+            notificationsDropdown.addEventListener('hidden.bs.dropdown', function() {
+                console.log('Dropdown is hidden');
+            });
+        }
+    </script>
+</body>
+</html>

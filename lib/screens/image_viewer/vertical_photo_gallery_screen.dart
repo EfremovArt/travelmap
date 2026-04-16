@@ -50,14 +50,14 @@ class _VerticalPhotoGalleryScreenState extends State<VerticalPhotoGalleryScreen>
         : widget.post.images.length;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        iconTheme: IconThemeData(color: Colors.white),
+        backgroundColor: Colors.white,
+        iconTheme: IconThemeData(color: Colors.black),
         title: Text(
           widget.post.title.isNotEmpty ? widget.post.title : 'Фотографии',
           style: TextStyle(
-            color: Colors.white,
+            color: Colors.black,
             fontFamily: 'Gilroy',
             fontWeight: FontWeight.w600,
           ),
@@ -80,7 +80,7 @@ class _VerticalPhotoGalleryScreenState extends State<VerticalPhotoGalleryScreen>
                           fit: BoxFit.contain,
                           placeholder: (context, url) => Center(
                             child: CircularProgressIndicator(
-                              color: Colors.white,
+                              color: Colors.black,
                             ),
                           ),
                           errorWidget: (context, url, error) => Center(
@@ -89,14 +89,14 @@ class _VerticalPhotoGalleryScreenState extends State<VerticalPhotoGalleryScreen>
                               children: [
                                 Icon(
                                   Icons.broken_image,
-                                  color: Colors.white,
+                                  color: Colors.black,
                                   size: 48,
                                 ),
                                 SizedBox(height: 8),
                                 Text(
                                   'Не удалось загрузить изображение',
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: Colors.black,
                                     fontFamily: 'Gilroy',
                                   ),
                                 ),
@@ -113,14 +113,14 @@ class _VerticalPhotoGalleryScreenState extends State<VerticalPhotoGalleryScreen>
                               children: [
                                 Icon(
                                   Icons.broken_image,
-                                  color: Colors.white,
+                                  color: Colors.black,
                                   size: 48,
                                 ),
                                 SizedBox(height: 8),
                                 Text(
                                   'Не удалось загрузить изображение',
                                   style: TextStyle(
-                                    color: Colors.white,
+                                    color: Colors.black,
                                     fontFamily: 'Gilroy',
                                   ),
                                 ),

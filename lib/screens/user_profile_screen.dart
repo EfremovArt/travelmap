@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../models/post.dart';
+import '../models/location.dart';
 import '../services/post_service.dart';
 import '../services/social_service.dart';
 import '../services/user_service.dart';
@@ -25,6 +27,7 @@ import '../tabs/albums_tab.dart' show CreateAlbumScreen, AlbumDetailScreen, Edit
 import '../services/map_filter_service.dart';
 import 'main_screen.dart';
 import 'dart:async';
+import 'commercial_post_map_screen.dart';
 
 class UserProfileScreen extends StatefulWidget {
   final String userId;
@@ -496,18 +499,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
     if (mounted) {
       setState(() {
         _isFollowing = !_isFollowing;
+        // Изменяем только количество подписчиков у просматриваемого профиля
         if (_isFollowing) {
           _followersCount++;
-          // Также увеличиваем счетчик подписок для текущего пользователя
-          if (_currentUserId != null) {
-            _followingCount++;
-          }
         } else {
           _followersCount = _followersCount > 0 ? _followersCount - 1 : 0;
-          // Также уменьшаем счетчик подписок для текущего пользователя
-          if (_currentUserId != null) {
-            _followingCount = _followingCount > 0 ? _followingCount - 1 : 0;
-          }
         }
       });
     }
@@ -522,18 +518,11 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
       if (mounted) {
         setState(() {
           _isFollowing = !_isFollowing;
+          // Откатываем изменение количества подписчиков
           if (_isFollowing) {
             _followersCount++;
-            // Также увеличиваем счетчик подписок для текущего пользователя
-            if (_currentUserId != null) {
-              _followingCount++;
-            }
           } else {
             _followersCount = _followersCount > 0 ? _followersCount - 1 : 0;
-            // Также уменьшаем счетчик подписок для текущего пользователя
-            if (_currentUserId != null) {
-              _followingCount = _followingCount > 0 ? _followingCount - 1 : 0;
-            }
           }
         });
       }
@@ -972,6 +961,7 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 selectedItemColor: Colors.blue.shade900,
                 unselectedItemColor: Colors.grey.shade600,
                 currentIndex: widget.sourceTabIndex,
+                iconSize: 24.0,
                 onTap: (index) {
                   // Навигация через главный экран
                   if (mainScreenKey.currentState != null) {
@@ -985,62 +975,62 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                 showUnselectedLabels: false,
                 items: [
                   BottomNavigationBarItem(
-                    icon: Image.asset(
-                      'assets/Images/home.png',
+                    icon: SvgPicture.asset(
+                      'assets/Images/home.svg',
                       color: Colors.grey.shade700,
-                      width: 30,
-                      height: 30,
+                      width: 24,
+                      height: 24,
                     ),
-                    activeIcon: Image.asset(
-                      'assets/Images/home.png',
-                      color: Colors.blue.shade900,
-                      width: 30,
-                      height: 30,
+                    activeIcon: SvgPicture.asset(
+                      'assets/Images/home.svg',
+                      color: Color.fromRGBO(0, 122, 255, 1),
+                      width: 24,
+                      height: 24,
                     ),
                     label: '',
                   ),
                   BottomNavigationBarItem(
-                    icon: Image.asset(
-                      'assets/Images/following.png',
+                    icon: SvgPicture.asset(
+                      'assets/Images/following.svg',
                       color: Colors.grey.shade700,
-                      width: 30,
-                      height: 30,
+                      width: 24,
+                      height: 24,
                     ),
-                    activeIcon: Image.asset(
-                      'assets/Images/following.png',
-                      color: Colors.blue.shade900,
-                      width: 30,
-                      height: 30,
+                    activeIcon: SvgPicture.asset(
+                      'assets/Images/following.svg',
+                      color: Color.fromRGBO(0, 122, 255, 1),
+                      width: 24,
+                      height: 24,
                     ),
                     label: '',
                   ),
                   BottomNavigationBarItem(
-                    icon: Image.asset(
-                      'assets/Images/favorites.png',
+                    icon: SvgPicture.asset(
+                      'assets/Images/favorites.svg',
                       color: Colors.grey.shade700,
-                      width: 32,
-                      height: 32,
+                      width: 24,
+                      height: 24,
                     ),
-                    activeIcon: Image.asset(
-                      'assets/Images/favorites.png',
-                      color: Colors.blue.shade900,
-                      width: 32,
-                      height: 32,
+                    activeIcon: SvgPicture.asset(
+                      'assets/Images/favorites.svg',
+                      color: Color.fromRGBO(0, 122, 255, 1),
+                      width: 24,
+                      height: 24,
                     ),
                     label: '',
                   ),
                   BottomNavigationBarItem(
-                    icon: Image.asset(
-                      'assets/Images/mymap.png',
+                    icon: SvgPicture.asset(
+                      'assets/Images/mymap.svg',
                       color: Colors.grey.shade700,
-                      width: 32,
-                      height: 32,
+                      width: 24,
+                      height: 24,
                     ),
-                    activeIcon: Image.asset(
-                      'assets/Images/mymap.png',
-                      color: Colors.blue.shade900,
-                      width: 32,
-                      height: 32,
+                    activeIcon: SvgPicture.asset(
+                      'assets/Images/mymap.svg',
+                      color: Color.fromRGBO(0, 122, 255, 1),
+                      width: 24,
+                      height: 24,
                     ),
                     label: '',
                   ),
@@ -1048,12 +1038,12 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                     icon: Icon(
                       Icons.photo_album_outlined,
                       color: Colors.grey.shade700,
-                      size: 30,
+                      size: 24,
                     ),
                     activeIcon: Icon(
                       Icons.photo_album,
-                      color: Colors.blue.shade900,
-                      size: 30,
+                      color: Color.fromRGBO(0, 122, 255, 1),
+                      size: 24,
                     ),
                     label: '',
                   ),
@@ -1433,6 +1423,33 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             opaque: false,
                           ),
                         );
+                      },
+                      onShowOnMap: (p) {
+                        if (p.hasLocation) {
+                          AppLogger.log('📍 Opening map for commercial post: ${p.title}');
+                          
+                          // Открываем CommercialPostMapScreen с всеми коммерческими постами пользователя
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => CommercialPostMapScreen(
+                                post: p,
+                                allPosts: items, // Передаем все коммерческие посты пользователя
+                                onPostTap: (tappedPost) {
+                                  AppLogger.log("📍 User returned from map to commercial post ${tappedPost.id}");
+                                  // Пост уже виден в списке, дополнительная прокрутка не требуется
+                                },
+                              ),
+                            ),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('No location data available for this commercial post'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        }
                       },
                       isFollowing: false,
                     ),

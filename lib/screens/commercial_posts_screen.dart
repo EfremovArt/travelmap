@@ -243,6 +243,7 @@ class _CommercialPostsScreenState extends State<CommercialPostsScreen> {
       MaterialPageRoute(
         builder: (context) => CommercialPostMapScreen(
           post: post,
+          allPosts: _commercialPosts, // Передаем все коммерческие посты для данного альбома
           onPostTap: (tappedPost) {
             // Когда пользователь нажимает "Return to Post" на карте,
             // мы можем прокрутить к этому посту или выделить его

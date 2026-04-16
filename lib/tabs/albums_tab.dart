@@ -1915,12 +1915,22 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       final basePost = await PostService.getPostById(firstId);
       if (basePost == null) continue;
 
-      // Собираем список URL только из фото, входящих в альбом
+      // Собираем список URL из фото, входящих в альбом
       final urls = <String>[];
+      final originalUrls = <String>[];
+      
       for (final lp in locPhotos) {
+        // Обрезанная версия для превью (если нужна в будущем)
         final fp = (lp['file_path'] ?? lp['filePath'] ?? '').toString();
-        if (fp.isEmpty) continue;
-        urls.add(ApiConfig.formatImageUrl(fp));
+        if (fp.isNotEmpty) {
+          urls.add(ApiConfig.formatImageUrl(fp));
+        }
+        
+        // Оригинальная версия для правильного отображения без обрезки
+        final originalFp = (lp['original_file_path'] ?? lp['originalFilePath'] ?? fp).toString();
+        if (originalFp.isNotEmpty) {
+          originalUrls.add(ApiConfig.formatImageUrl(originalFp));
+        }
       }
 
       result.add(Post(
@@ -1932,6 +1942,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
         location: basePost.location,
         images: const [],
         imageUrls: urls.isNotEmpty ? urls : basePost.imageUrls,
+        originalImageUrls: originalUrls.isNotEmpty ? originalUrls : (urls.isNotEmpty ? urls : basePost.originalImageUrls),
         createdAt: basePost.createdAt,
       ));
     }
@@ -2129,7 +2140,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                         onDeletePost: _deletePost,
                         onLikePost: _likePost,
                         onFavoritePost: _favoritePost,
-                        onLocationPostsClick: _openLocationPostsScreen,
+                        onLocationPostsClick: _showOnMap,
                         onImageTap: (post, imageIndex) {
                           Navigator.of(context).push(
                             MaterialPageRoute(

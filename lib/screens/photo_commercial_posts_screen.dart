@@ -240,6 +240,7 @@ class _PhotoCommercialPostsScreenState extends State<PhotoCommercialPostsScreen>
       MaterialPageRoute(
         builder: (context) => CommercialPostMapScreen(
           post: post,
+          allPosts: _commercialPosts, // Передаем все коммерческие посты для данного фото
           onPostTap: (tappedPost) {
             AppLogger.log("📍 User returned from map to commercial post ${tappedPost.id}");
           },

@@ -212,7 +212,8 @@ class _PostCardState extends State<PostCard> {
     final bool shouldDisableProfileClick = insideProfile || widget.isCurrentUserPost;
     // Используем URL изображений, если они есть, иначе используем локальные файлы
     final bool hasImages = widget.post.images.isNotEmpty;
-    final bool hasUrls = widget.post.imageUrls.isNotEmpty;
+    // Используем оригинальные изображения для правильного отображения без обрезки
+    final bool hasUrls = widget.post.originalImageUrls.isNotEmpty || widget.post.imageUrls.isNotEmpty;
     
     // Получаем размер экрана для адаптивности
     final screenWidth = MediaQuery.of(context).size.width;
@@ -446,7 +447,9 @@ class _PostCardState extends State<PostCard> {
                   Positioned.fill(
                     child: hasUrls
                       ? PhotoGrid(
-                          imageUrls: widget.post.imageUrls,
+                          imageUrls: widget.post.originalImageUrls.isNotEmpty 
+                              ? widget.post.originalImageUrls 
+                              : widget.post.imageUrls,
                           onImageTap: (index) {
                             if (widget.onImageTap != null) {
                               widget.onImageTap!(widget.post, index);
@@ -483,7 +486,7 @@ class _PostCardState extends State<PostCard> {
                           ),
                           SizedBox(width: 4),
                           Text(
-                            '${hasUrls ? widget.post.imageUrls.length : widget.post.images.length}',
+                            '${hasUrls ? (widget.post.originalImageUrls.isNotEmpty ? widget.post.originalImageUrls.length : widget.post.imageUrls.length) : widget.post.images.length}',
                             style: TextStyle(
                               fontFamily: 'Gilroy',
                               color: Colors.white,

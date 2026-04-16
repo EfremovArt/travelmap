@@ -203,6 +203,7 @@ class _MainScreenState extends State<MainScreen> {
         selectedItemColor: Color.fromRGBO(0, 122, 255, 1), // iOS Blue - яркий синий
         unselectedItemColor: Colors.grey.shade600,
         currentIndex: _selectedIndex,
+        iconSize: 24.0,
         onTap: _onTabChanged,
         showSelectedLabels: false,
         showUnselectedLabels: false,

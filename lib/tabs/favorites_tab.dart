@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import '../models/post.dart';
+import '../models/location.dart';
 import '../models/commercial_post.dart';
 import '../services/social_service.dart';
 import '../services/user_service.dart';
@@ -16,10 +17,9 @@ import '../services/album_service.dart';
 import '../widgets/album_card.dart';
 import 'albums_tab.dart' show AlbumDetailScreen, EditAlbumScreen; // для навигации в детали альбома и редактирования
 import '../screens/comments_screen.dart';
-import '../screens/commercial_post_map_screen.dart';
-import '../screens/location_posts_screen.dart';
 import '../screens/image_viewer/vertical_photo_gallery_screen.dart';
 import '../screens/image_viewer/commercial_post_gallery_screen.dart';
+import '../screens/commercial_post_map_screen.dart';
 /// Tab with user's favorite posts
 class FavoritesTab extends StatefulWidget {
   const FavoritesTab({Key? key}) : super(key: key);
@@ -44,6 +44,12 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
   // Search functionality
   TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  
+  // ScrollController for scrolling to specific posts
+  final ScrollController _scrollController = ScrollController();
+  
+  // Map for tracking post indices for scrolling
+  final Map<String, int> _postIdToIndex = {};
   
   // Cache for author info to improve search performance
   Map<String, Map<String, dynamic>> _authorCache = {};
@@ -102,6 +108,7 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
     
     _stopFavoritesWatcher();
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
   
@@ -115,7 +122,69 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
       UserService.clearCache();
       // Перезагружаем данные пользователя
       _loadUserData();
+      
+      // Проверяем, нужно ли прокрутить к конкретному посту
+      _checkAndScrollToPost();
     }
+  }
+  
+  // Проверка и прокрутка к посту при возврате с карты
+  Future<void> _checkAndScrollToPost() async {
+    final scrollToPostId = _mapFilterService.scrollToPostId;
+    AppLogger.log('🔍 FavoritesTab: Проверяем scrollToPostId: $scrollToPostId');
+    
+    if (scrollToPostId != null && scrollToPostId.isNotEmpty) {
+      AppLogger.log('📍 FavoritesTab: Найден scrollToPostId, пробуем прокрутить к посту $scrollToPostId');
+      // Очищаем сохраненный ID
+      _mapFilterService.clearScrollToPostId();
+      
+      // Небольшая задержка для завершения анимации перехода
+      await Future.delayed(Duration(milliseconds: 300));
+      if (mounted) {
+        await _scrollToPostById(scrollToPostId);
+      }
+    }
+  }
+  
+  // Метод для прокрутки к посту по ID
+  Future<void> _scrollToPostById(String postId) async {
+    AppLogger.log('🎯 FavoritesTab: Начинаем прокрутку к посту $postId');
+    AppLogger.log('   mounted: $mounted, hasClients: ${_scrollController.hasClients}');
+    
+    if (!mounted || !_scrollController.hasClients) {
+      AppLogger.log('⚠️ FavoritesTab: ScrollController не готов для прокрутки');
+      return;
+    }
+    
+    final postIndex = _postIdToIndex[postId];
+    AppLogger.log('   Индекс поста в _postIdToIndex: $postIndex');
+    AppLogger.log('   Всего элементов в _postIdToIndex: ${_postIdToIndex.length}');
+    
+    if (postIndex == null) {
+      AppLogger.log('⚠️ FavoritesTab: Пост $postId не найден в списке');
+      AppLogger.log('   Доступные ID: ${_postIdToIndex.keys.take(5).join(", ")}...');
+      return;
+    }
+    
+    AppLogger.log('📍 FavoritesTab: Прокручиваем к посту $postId с индексом $postIndex');
+    
+    // Вычисляем примерный offset (высота карточки ≈ 520px + отступы)
+    const double itemHeight = 536.0; // 520 + margins
+    final double targetOffset = postIndex * itemHeight;
+    
+    // Ограничиваем offset максимальной позицией
+    final double maxOffset = _scrollController.position.maxScrollExtent;
+    final double safeOffset = targetOffset > maxOffset ? maxOffset : targetOffset;
+    
+    AppLogger.log('   Прокручиваем к offset: $safeOffset (target: $targetOffset, max: $maxOffset)');
+    
+    await _scrollController.animateTo(
+      safeOffset,
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.easeInOut,
+    );
+    
+    AppLogger.log('✅ FavoritesTab: Прокрутка завершена');
   }
 
   void _startFavoritesWatcher() {
@@ -580,17 +649,16 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
 
     AppLogger.log("📍 Showing commercial post ${post.id} on map with coordinates ${post.latitude}, ${post.longitude}");
     
-    // Навигируем к экрану карты коммерческого поста
+    // Открываем CommercialPostMapScreen с всеми избранными коммерческими постами
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => CommercialPostMapScreen(
           post: post,
+          allPosts: _favoriteCommercialPosts, // Передаем все избранные коммерческие посты
           onPostTap: (tappedPost) {
-            // Когда пользователь нажимает "Return to Post" на карте,
-            // мы можем прокрутить к этому посту или выделить его
             AppLogger.log("📍 User returned from map to commercial post ${tappedPost.id}");
-            // Можно добавить логику прокрутки к конкретному посту
+            // Пост уже виден в списке, дополнительная прокрутка не требуется
           },
         ),
       ),
@@ -628,21 +696,6 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
         ),
       );
     }
-  }
-
-  /// Открыть страницу с постами локации
-  void _openLocationPostsScreen(Post post) {
-    AppLogger.log('🔄 Открытие экрана постов локации: ${post.locationName}');
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => LocationPostsScreen(
-          initialPost: post,
-          locationName: post.locationName,
-          latitude: post.location.latitude,
-          longitude: post.location.longitude,
-        ),
-      ),
-    );
   }
 
   // Показать обычный пост на карте с фильтрацией по избранным
@@ -692,6 +745,11 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+    // Проверяем, нужно ли прокрутить к посту после возврата с карты
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAndScrollToPost();
+    });
+    
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -711,16 +769,6 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
               Tab(text: 'Albums (${_favoriteAlbumRows.length})'),
             ],
           ),
-          actions: [
-            // Кнопка принудительного обновления для диагностики
-            IconButton(
-              icon: Icon(Icons.refresh),
-              onPressed: () {
-                AppLogger.log("🔄 Принудительное обновление избранных альбомов");
-                _loadFavoriteAlbums();
-              },
-            ),
-          ],
         ),
         body: Column(
           children: [
@@ -825,6 +873,7 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
       },
       child: (_favoritePosts.isEmpty && _favoriteCommercialPosts.isEmpty)
           ? ListView(
+              controller: _scrollController,
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.only(top: 80),
               children: const [
@@ -859,6 +908,7 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
             )
           : combinedItems.isEmpty && _searchQuery.isNotEmpty
               ? ListView(
+                  controller: _scrollController,
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.only(top: 80),
                   children: [
@@ -892,6 +942,7 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
                   ],
                 )
               : ListView.separated(
+                  controller: _scrollController,
                   padding: const EdgeInsets.only(top: 8, bottom: 90, left: 8, right: 8),
                   itemCount: combinedItems.length,
                   separatorBuilder: (context, index) => SizedBox(height: 4),
@@ -899,11 +950,15 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
                     final item = combinedItems[index];
                     final type = item['type'] as String;
                     
-                    
+                    // Сохраняем индекс поста для возможности прокрутки
                     if (type == 'regular') {
-                      return _buildRegularPostItem(item['post'] as Post);
+                      final post = item['post'] as Post;
+                      _postIdToIndex[post.id] = index;
+                      return _buildRegularPostItem(post);
                     } else {
-                      return _buildCommercialPostItem(item['post'] as CommercialPost);
+                      final commercialPost = item['post'] as CommercialPost;
+                      _postIdToIndex[commercialPost.id.toString()] = index;
+                      return _buildCommercialPostItem(commercialPost);
                     }
                   },
                 ),
@@ -950,7 +1005,7 @@ class _FavoritesTabState extends State<FavoritesTab> with WidgetsBindingObserver
                 onFavoritePost: _favoritePost,
                 onFollowUser: _followUser,
                 isFollowing: isFollowing,
-                onLocationPostsClick: _openLocationPostsScreen,
+                onLocationPostsClick: _showFavoritePostOnMap,
                 onImageTap: (post, imageIndex) {
                   Navigator.of(context).push(
                     MaterialPageRoute(
