@@ -52,3 +52,5 @@ travel/config.php
 travel/admin/config/admin_config.php
 lib/config/mapbox_config.dart
 lib/config/api_config.dart
+android/app/src/main/AndroidManifest.xml
+android/gradle.properties
